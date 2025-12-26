@@ -2,7 +2,7 @@
 // Store your API keys here
 
 const CONFIG = {
-  apiKey: '1wpntBkyUwS16kkJijmCjgwArD7P-6x3djx-ikBB0BzE', // ← Your existing Google API key
+  apiKey: 'AIzaSyCVsmz4eMT_pYviQwBKYQtXPgykGQYw9Yg', // ← Your existing Google API key
   spreadsheetIdPro: '1fa694tBLbrJbRPQVh0Y9TLKinjSWsLrpOoJININmjXY',
   spreadsheetIdPur: '1wpntBkyUwS16kkJijmCjgwArD7P-6x3djx-ikBB0BzE',
   ga4PropertyId: '303063921' // ← GA4 Property ID
