@@ -61,7 +61,7 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
         <div class="card">
           <h3 class="font-bold mb-4">Sales per Channel</h3>
           <canvas id="salesChart"></canvas>
@@ -79,13 +79,28 @@
           <canvas id="expenseChart"></canvas>
         </div>
       </div>
+
+      <!-- New Section: Shopify Insights -->
+      <div class="mb-4">
+        <h2 class="text-xl font-bold text-gray-800 mb-4">📦 Shopify Insights</h2>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="card">
+          <h3 class="font-bold mb-4">Same Day Delivery % (Last 6 Months)</h3>
+          <canvas id="sameDayChart"></canvas>
+        </div>
+        <div class="card tile border-indigo-500">
+          <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Same Day Orders (MTD)</p>
+          <p id="sameday-mtd" class="text-2xl font-bold text-gray-800">0%</p>
+          <p id="sameday-detail" class="text-xs text-gray-500 mt-2"></p>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
     // ============================================
-    // CONFIG is now loaded from config.js
-    // Monthly Targets
+    // CONFIG & TARGETS
     // ============================================
     const TARGETS = {
       online: 90000,
@@ -94,7 +109,16 @@
       total: 150000
     };
 
-    // Helper to calculate if on track (based on days passed in month)
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+    
+    function parseCurrency(str) {
+      if (!str) return 0;
+      const cleaned = str.toString().replace(/€|,|\s/g, '');
+      return parseFloat(cleaned) || 0;
+    }
+
     function calculateProgress(actual, target) {
       const today = new Date();
       const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
@@ -118,16 +142,6 @@
       return { percentage, status, color };
     }
 
-    // ============================================
-    // HELPER FUNCTIONS
-    // ============================================
-    
-    function parseCurrency(str) {
-      if (!str) return 0;
-      const cleaned = str.toString().replace(/€|,|\s/g, '');
-      return parseFloat(cleaned) || 0;
-    }
-
     async function fetchSheetData(spreadsheetId, sheetName) {
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}?key=${CONFIG.apiKey}`;
       const response = await fetch(url);
@@ -147,6 +161,81 @@
         }
       }
       return -1;
+    }
+
+    // ============================================
+    // SHOPIFY API FUNCTIONS
+    // ============================================
+
+    async function fetchShopifyOrders(startDate, endDate) {
+      const url = `https://${SHOPIFY_CONFIG.storeUrl}/admin/api/${SHOPIFY_CONFIG.apiVersion}/orders.json?status=any&created_at_min=${startDate}&created_at_max=${endDate}&limit=250`;
+      
+      const response = await fetch(url, {
+        headers: {
+          'X-Shopify-Access-Token': SHOPIFY_CONFIG.accessToken,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Shopify API error: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.orders || [];
+    }
+
+    async function getSameDayDeliveryData() {
+      const months = [];
+      const labels = [];
+      const sameDayPercentages = [];
+      
+      // Get last 6 months of data
+      const today = new Date();
+      for (let i = 5; i >= 0; i--) {
+        const monthDate = new Date(today.getFullYear(), today.getMonth() - i, 1);
+        const startDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1).toISOString();
+        const endDate = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0, 23, 59, 59).toISOString();
+        
+        const monthLabel = monthDate.toLocaleString('default', { month: 'short' });
+        labels.push(monthLabel);
+
+        try {
+          const orders = await fetchShopifyOrders(startDate, endDate);
+          
+          let totalOrders = orders.length;
+          let sameDayOrders = 0;
+
+          orders.forEach(order => {
+            // Check if shipping method contains "Same Day"
+            const shippingLines = order.shipping_lines || [];
+            const hasSameDay = shippingLines.some(line => 
+              line.title && line.title.toLowerCase().includes('same day')
+            );
+            
+            if (hasSameDay) {
+              sameDayOrders++;
+            }
+          });
+
+          const percentage = totalOrders > 0 ? ((sameDayOrders / totalOrders) * 100).toFixed(1) : 0;
+          sameDayPercentages.push(parseFloat(percentage));
+
+          // Store current month data for MTD tile
+          if (i === 0) {
+            months.currentMonthData = {
+              total: totalOrders,
+              sameDay: sameDayOrders,
+              percentage: percentage
+            };
+          }
+        } catch (error) {
+          console.error(`Error fetching month ${monthLabel}:`, error);
+          sameDayPercentages.push(0);
+        }
+      }
+
+      return { labels, sameDayPercentages, currentMonth: months.currentMonthData || { total: 0, sameDay: 0, percentage: 0 } };
     }
 
     // ============================================
@@ -254,15 +343,12 @@
     async function draw() {
       const data = await getDashboardData();
       
-      document.getElementById('loading').classList.add('hidden');
-
       if (data.error) {
+        document.getElementById('loading').classList.add('hidden');
         document.getElementById('error').classList.remove('hidden');
         document.getElementById('error-message').innerText = data.error;
         return;
       }
-
-      document.getElementById('dashboard-content').classList.remove('hidden');
 
       // Update MTD tiles with target indicators
       document.getElementById('online-mtd').innerText = '€' + Number(data.mtd.online).toLocaleString();
@@ -270,7 +356,6 @@
       document.getElementById('rest-mtd').innerText = '€' + Number(data.mtd.restaurant).toLocaleString();
       document.getElementById('profit-ytd').innerText = '€' + Number(data.mtd.profitYTD).toLocaleString();
 
-      // Add target progress
       const onlineProgress = calculateProgress(data.mtd.online, TARGETS.online);
       const retailProgress = calculateProgress(data.mtd.retail, TARGETS.retail);
       const restProgress = calculateProgress(data.mtd.restaurant, TARGETS.restaurant);
@@ -281,6 +366,7 @@
 
       const commonOpts = { responsive: true, plugins: { legend: { position: 'bottom' } } };
 
+      // Sales Chart with Target Line
       new Chart(document.getElementById('salesChart'), {
         type: 'bar',
         data: {
@@ -298,11 +384,7 @@
             y: { 
               stacked: true, 
               beginAtZero: true,
-              ticks: {
-                callback: function(value) {
-                  return '€' + value.toLocaleString();
-                }
-              }
+              ticks: { callback: (value) => '€' + value.toLocaleString() }
             } 
           },
           plugins: {
@@ -322,10 +404,7 @@
                     position: 'end',
                     backgroundColor: '#EF4444',
                     color: 'white',
-                    font: {
-                      size: 10,
-                      weight: 'bold'
-                    }
+                    font: { size: 10, weight: 'bold' }
                   }
                 }
               }
@@ -334,6 +413,7 @@
         }
       });
 
+      // GP% Chart
       new Chart(document.getElementById('gpChart'), {
         type: 'line',
         data: {
@@ -349,16 +429,13 @@
             y: {
               beginAtZero: true,
               max: 50,
-              ticks: {
-                callback: function(value) {
-                  return value + '%';
-                }
-              }
+              ticks: { callback: (value) => value + '%' }
             }
           }
         }
       });
 
+      // Purchase% Chart
       new Chart(document.getElementById('purchaseChart'), {
         type: 'line',
         data: {
@@ -371,16 +448,13 @@
             y: {
               beginAtZero: true,
               max: 70,
-              ticks: {
-                callback: function(value) {
-                  return value + '%';
-                }
-              }
+              ticks: { callback: (value) => value + '%' }
             }
           }
         }
       });
 
+      // Salary & Shipping% Chart
       new Chart(document.getElementById('expenseChart'), {
         type: 'line',
         data: {
@@ -396,15 +470,54 @@
             y: {
               beginAtZero: true,
               max: 25,
-              ticks: {
-                callback: function(value) {
-                  return value + '%';
-                }
-              }
+              ticks: { callback: (value) => value + '%' }
             }
           }
         }
       });
+
+      // Fetch and display Shopify Same Day Delivery data
+      try {
+        const sameDayData = await getSameDayDeliveryData();
+        
+        // Update MTD tile
+        document.getElementById('sameday-mtd').innerText = sameDayData.currentMonth.percentage + '%';
+        document.getElementById('sameday-detail').innerHTML = `${sameDayData.currentMonth.sameDay} of ${sameDayData.currentMonth.total} orders`;
+
+        // Create Same Day Delivery chart
+        new Chart(document.getElementById('sameDayChart'), {
+          type: 'line',
+          data: {
+            labels: sameDayData.labels,
+            datasets: [{
+              label: 'Same Day Delivery %',
+              data: sameDayData.sameDayPercentages,
+              borderColor: '#6366F1',
+              backgroundColor: 'rgba(99, 102, 241, 0.1)',
+              tension: 0.3,
+              fill: true,
+              borderWidth: 2
+            }]
+          },
+          options: {
+            ...commonOpts,
+            scales: {
+              y: {
+                beginAtZero: true,
+                max: 100,
+                ticks: { callback: (value) => value + '%' }
+              }
+            }
+          }
+        });
+      } catch (error) {
+        console.error('Error fetching Shopify data:', error);
+        document.getElementById('sameday-mtd').innerText = 'Error';
+        document.getElementById('sameday-detail').innerText = 'Could not fetch Shopify data';
+      }
+
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('dashboard-content').classList.remove('hidden');
     }
 
     draw();
