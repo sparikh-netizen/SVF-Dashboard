@@ -80,7 +80,7 @@
         </div>
       </div>
 
-      <!-- New Section: Shopify Insights -->
+      <!-- Shopify Insights Section -->
       <div class="mb-4">
         <h2 class="text-xl font-bold text-gray-800 mb-4">📦 Shopify Insights</h2>
       </div>
@@ -164,92 +164,18 @@
     }
 
     // ============================================
-    // SHOPIFY API FUNCTIONS
-    // ============================================
-
-    async function fetchShopifyOrders(startDate, endDate) {
-      const url = `https://${SHOPIFY_CONFIG.storeUrl}/admin/api/${SHOPIFY_CONFIG.apiVersion}/orders.json?status=any&created_at_min=${startDate}&created_at_max=${endDate}&limit=250`;
-      
-      const response = await fetch(url, {
-        headers: {
-          'X-Shopify-Access-Token': SHOPIFY_CONFIG.accessToken,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`Shopify API error: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      return data.orders || [];
-    }
-
-    async function getSameDayDeliveryData() {
-      const months = [];
-      const labels = [];
-      const sameDayPercentages = [];
-      
-      // Get last 6 months of data
-      const today = new Date();
-      for (let i = 5; i >= 0; i--) {
-        const monthDate = new Date(today.getFullYear(), today.getMonth() - i, 1);
-        const startDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1).toISOString();
-        const endDate = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0, 23, 59, 59).toISOString();
-        
-        const monthLabel = monthDate.toLocaleString('default', { month: 'short' });
-        labels.push(monthLabel);
-
-        try {
-          const orders = await fetchShopifyOrders(startDate, endDate);
-          
-          let totalOrders = orders.length;
-          let sameDayOrders = 0;
-
-          orders.forEach(order => {
-            // Check if shipping method contains "Same Day"
-            const shippingLines = order.shipping_lines || [];
-            const hasSameDay = shippingLines.some(line => 
-              line.title && line.title.toLowerCase().includes('same day')
-            );
-            
-            if (hasSameDay) {
-              sameDayOrders++;
-            }
-          });
-
-          const percentage = totalOrders > 0 ? ((sameDayOrders / totalOrders) * 100).toFixed(1) : 0;
-          sameDayPercentages.push(parseFloat(percentage));
-
-          // Store current month data for MTD tile
-          if (i === 0) {
-            months.currentMonthData = {
-              total: totalOrders,
-              sameDay: sameDayOrders,
-              percentage: percentage
-            };
-          }
-        } catch (error) {
-          console.error(`Error fetching month ${monthLabel}:`, error);
-          sameDayPercentages.push(0);
-        }
-      }
-
-      return { labels, sameDayPercentages, currentMonth: months.currentMonthData || { total: 0, sameDay: 0, percentage: 0 } };
-    }
-
-    // ============================================
     // MAIN DATA FETCHING
     // ============================================
     
     async function getDashboardData() {
       try {
-        const [sheetProData, sheetPurData, shopifyData, retailData, restaurantData] = await Promise.all([
+        const [sheetProData, sheetPurData, shopifyData, retailData, restaurantData, sameDayData] = await Promise.all([
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Pro. Monthly'),
           fetchSheetData(CONFIG.spreadsheetIdPur, 'Dashboard'),
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Shopify_Orders_Monthly'),
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Retail Monthly Sales'),
-          fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant Monthly Sales')
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant Monthly Sales'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Shopify_SameDay_Monthly')
         ]);
 
         const col = {
@@ -258,7 +184,8 @@
 
         let results = {
           mtd: { online: 0, retail: 0, restaurant: 0, profitYTD: 0 },
-          charts: { labels: [], online: [], retail: [], rest: [], gpOnline: [], gpRetail: [], purchasePct: [], salaryPct: [], shippingPct: [] }
+          charts: { labels: [], online: [], retail: [], rest: [], gpOnline: [], gpRetail: [], purchasePct: [], salaryPct: [], shippingPct: [] },
+          sameDay: { labels: [], percentages: [], currentMonth: { percentage: 0, sameDay: 0, total: 0 } }
         };
 
         // MTD VALUES
@@ -327,6 +254,27 @@
 
             let pAmt = purchaseMap[d.getMonth()] || 0;
             results.charts.purchasePct.push(sTotal > 0 ? ((pAmt / sTotal) * 100).toFixed(1) : 0);
+          }
+        });
+
+        // SAME DAY DELIVERY DATA (from Google Sheets)
+        sameDayData.slice(1).forEach((row, idx) => {
+          if (!row[0]) return;
+          
+          const monthKey = row[0]; // e.g., "2025-07"
+          const date = new Date(monthKey + '-01');
+          const monthLabel = date.toLocaleString('default', { month: 'short' });
+          
+          results.sameDay.labels.push(monthLabel);
+          results.sameDay.percentages.push(parseFloat(row[3]) || 0); // Column D (Same Day %)
+          
+          // Check if this is current month (December 2025)
+          if (date.getMonth() === 11 && date.getFullYear() === 2025) {
+            results.sameDay.currentMonth = {
+              percentage: parseFloat(row[3]) || 0,
+              sameDay: parseInt(row[2]) || 0,
+              total: parseInt(row[1]) || 0
+            };
           }
         });
 
@@ -476,45 +424,36 @@
         }
       });
 
-      // Fetch and display Shopify Same Day Delivery data
-      try {
-        const sameDayData = await getSameDayDeliveryData();
-        
-        // Update MTD tile
-        document.getElementById('sameday-mtd').innerText = sameDayData.currentMonth.percentage + '%';
-        document.getElementById('sameday-detail').innerHTML = `${sameDayData.currentMonth.sameDay} of ${sameDayData.currentMonth.total} orders`;
-
-        // Create Same Day Delivery chart
-        new Chart(document.getElementById('sameDayChart'), {
-          type: 'line',
-          data: {
-            labels: sameDayData.labels,
-            datasets: [{
-              label: 'Same Day Delivery %',
-              data: sameDayData.sameDayPercentages,
-              borderColor: '#6366F1',
-              backgroundColor: 'rgba(99, 102, 241, 0.1)',
-              tension: 0.3,
-              fill: true,
-              borderWidth: 2
-            }]
-          },
-          options: {
-            ...commonOpts,
-            scales: {
-              y: {
-                beginAtZero: true,
-                max: 100,
-                ticks: { callback: (value) => value + '%' }
-              }
+      // Same Day Delivery Chart (from Google Sheets)
+      new Chart(document.getElementById('sameDayChart'), {
+        type: 'line',
+        data: {
+          labels: data.sameDay.labels,
+          datasets: [{
+            label: 'Same Day Delivery %',
+            data: data.sameDay.percentages,
+            borderColor: '#6366F1',
+            backgroundColor: 'rgba(99, 102, 241, 0.1)',
+            tension: 0.3,
+            fill: true,
+            borderWidth: 2
+          }]
+        },
+        options: {
+          ...commonOpts,
+          scales: {
+            y: {
+              beginAtZero: true,
+              max: 100,
+              ticks: { callback: (value) => value + '%' }
             }
           }
-        });
-      } catch (error) {
-        console.error('Error fetching Shopify data:', error);
-        document.getElementById('sameday-mtd').innerText = 'Error';
-        document.getElementById('sameday-detail').innerText = 'Could not fetch Shopify data';
-      }
+        }
+      });
+
+      // Update Same Day MTD tile
+      document.getElementById('sameday-mtd').innerText = data.sameDay.currentMonth.percentage.toFixed(1) + '%';
+      document.getElementById('sameday-detail').innerHTML = `${data.sameDay.currentMonth.sameDay} of ${data.sameDay.currentMonth.total} orders`;
 
       document.getElementById('loading').classList.add('hidden');
       document.getElementById('dashboard-content').classList.remove('hidden');
