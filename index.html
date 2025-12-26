@@ -180,119 +180,54 @@
     }
 
     // ============================================
-    // GOOGLE ANALYTICS 4 API FUNCTIONS
+    // GOOGLE ANALYTICS DATA FROM SHEETS
     // ============================================
 
-    async function fetchGA4Data() {
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setMonth(startDate.getMonth() - 6);
-
+    async function fetchGA4DataFromSheets() {
       try {
-        // Fetch device data (web vs mobile) - weekly
-        const deviceData = await fetchGA4Report({
-          dateRanges: [{ 
-            startDate: startDate.toISOString().split('T')[0], 
-            endDate: endDate.toISOString().split('T')[0] 
-          }],
-          dimensions: [
-            { name: 'dateWeek' },
-            { name: 'deviceCategory' }
-          ],
-          metrics: [{ name: 'activeUsers' }]
-        });
+        const [deviceData, cityData] = await Promise.all([
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'GA4_Device_Weekly'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'GA4_Top_Cities')
+        ]);
 
-        // Fetch city data
-        const cityData = await fetchGA4Report({
-          dateRanges: [{ 
-            startDate: startDate.toISOString().split('T')[0], 
-            endDate: endDate.toISOString().split('T')[0] 
-          }],
-          dimensions: [{ name: 'city' }],
-          metrics: [{ name: 'activeUsers' }],
-          limit: 10
-        });
-
-        return { deviceData, cityData };
+        return processGA4SheetsData(deviceData, cityData);
       } catch (error) {
-        console.error('GA4 Error:', error);
+        console.error('GA4 Sheets Error:', error);
         return null;
       }
     }
 
-    async function fetchGA4Report(requestBody) {
-      const url = `https://analyticsdata.googleapis.com/v1beta/properties/${CONFIG.ga4PropertyId}:runReport?key=${CONFIG.apiKey}`;
+    function processGA4SheetsData(deviceData, cityData) {
+      // Process device data
+      const labels = [];
+      const desktop = [];
+      const mobile = [];
       
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
+      deviceData.slice(1).forEach(row => {
+        if (!row[0]) return;
+        const week = row[0];
+        labels.push('W' + week);
+        desktop.push(parseInt(row[1]) || 0);
+        mobile.push(parseInt(row[2]) || 0);
       });
 
-      if (!response.ok) {
-        throw new Error(`GA4 API error: ${response.status} ${response.statusText}`);
-      }
-
-      return await response.json();
-    }
-
-    function processGA4DeviceData(data) {
-      if (!data || !data.rows) return { labels: [], desktop: [], mobile: [], tablet: [] };
-
-      const weeklyData = {};
-
-      data.rows.forEach(row => {
-        const week = row.dimensionValues[0].value; // dateWeek (YYYYWW format)
-        const device = row.dimensionValues[1].value; // desktop, mobile, tablet
-        const users = parseInt(row.metricValues[0].value) || 0;
-
-        if (!weeklyData[week]) {
-          weeklyData[week] = { desktop: 0, mobile: 0, tablet: 0 };
-        }
-
-        weeklyData[week][device.toLowerCase()] = users;
-      });
-
-      // Sort by week
-      const sortedWeeks = Object.keys(weeklyData).sort();
-      
-      const labels = sortedWeeks.map(week => {
-        // Convert YYYYWW to readable format
-        const year = week.slice(0, 4);
-        const weekNum = week.slice(4);
-        return `W${weekNum}`;
-      });
-
-      const desktop = sortedWeeks.map(week => weeklyData[week].desktop);
-      const mobile = sortedWeeks.map(week => weeklyData[week].mobile);
-      const tablet = sortedWeeks.map(week => weeklyData[week].tablet);
-
-      return { labels, desktop, mobile, tablet };
-    }
-
-    function processGA4CityData(data) {
-      if (!data || !data.rows) return { labels: [], users: [], colors: [] };
-
-      const cities = data.rows
-        .map(row => ({
-          city: row.dimensionValues[0].value,
-          users: parseInt(row.metricValues[0].value) || 0
-        }))
-        .filter(c => c.city !== '(not set)')
-        .sort((a, b) => b.users - a.users)
-        .slice(0, 10);
-
+      // Process city data
+      const cityLabels = [];
+      const cityUsers = [];
       const colors = [
         '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
         '#EC4899', '#14B8A6', '#F97316', '#6366F1', '#84CC16'
       ];
 
+      cityData.slice(1).forEach((row, idx) => {
+        if (!row[0]) return;
+        cityLabels.push(row[0]);
+        cityUsers.push(parseInt(row[1]) || 0);
+      });
+
       return {
-        labels: cities.map(c => c.city),
-        users: cities.map(c => c.users),
-        colors: colors.slice(0, cities.length)
+        device: { labels, desktop, mobile },
+        city: { labels: cityLabels, users: cityUsers, colors: colors.slice(0, cityLabels.length) }
       };
     }
 
@@ -303,11 +238,11 @@
     async function getDashboardData() {
       try {
         const [sheetProData, sheetPurData, shopifyData, retailData, restaurantData, sameDayData] = await Promise.all([
-          fetchSheetData(CONFIG.spreadsheetIdPro, 'Pro. Monthly'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Pro._Monthly'),
           fetchSheetData(CONFIG.spreadsheetIdPur, 'Dashboard'),
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Shopify_Orders_Monthly'),
-          fetchSheetData(CONFIG.spreadsheetIdPro, 'Retail Monthly Sales'),
-          fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant Monthly Sales'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Retail_Monthly_Sales'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant_Monthly_Sales'),
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Shopify_SameDay_Monthly')
         ]);
 
@@ -527,35 +462,33 @@
       document.getElementById('sameday-detail').innerHTML = `${data.sameDay.currentMonth.sameDay} of ${data.sameDay.currentMonth.total} orders`;
 
       // ============================================
-      // FETCH AND DRAW GA4 CHARTS
+      // FETCH AND DRAW GA4 CHARTS FROM SHEETS
       // ============================================
       
-      const ga4Data = await fetchGA4Data();
+      const ga4Data = await fetchGA4DataFromSheets();
       
       if (ga4Data) {
         // Device Chart (Web vs Mobile)
-        const deviceChartData = processGA4DeviceData(ga4Data.deviceData);
         new Chart(document.getElementById('deviceChart'), {
           type: 'line',
           data: {
-            labels: deviceChartData.labels,
+            labels: ga4Data.device.labels,
             datasets: [
-              { label: 'Desktop', data: deviceChartData.desktop, borderColor: '#3B82F6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.3, fill: true, borderWidth: 2 },
-              { label: 'Mobile', data: deviceChartData.mobile, borderColor: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true, borderWidth: 2 }
+              { label: 'Desktop', data: ga4Data.device.desktop, borderColor: '#3B82F6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.3, fill: true, borderWidth: 2 },
+              { label: 'Mobile', data: ga4Data.device.mobile, borderColor: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true, borderWidth: 2 }
             ]
           },
           options: { ...commonOpts, scales: { y: { beginAtZero: true, ticks: { callback: (value) => value.toLocaleString() + ' users' } } } }
         });
 
         // City Chart (Pie)
-        const cityChartData = processGA4CityData(ga4Data.cityData);
         new Chart(document.getElementById('cityChart'), {
           type: 'pie',
           data: {
-            labels: cityChartData.labels,
+            labels: ga4Data.city.labels,
             datasets: [{
-              data: cityChartData.users,
-              backgroundColor: cityChartData.colors
+              data: ga4Data.city.users,
+              backgroundColor: ga4Data.city.colors
             }]
           },
           options: { ...commonOpts, plugins: { ...commonOpts.plugins, legend: { position: 'right' } } }
