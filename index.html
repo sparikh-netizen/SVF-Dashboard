@@ -238,11 +238,11 @@
     async function getDashboardData() {
       try {
         const [sheetProData, sheetPurData, shopifyData, retailData, restaurantData, sameDayData] = await Promise.all([
-          fetchSheetData(CONFIG.spreadsheetIdPro, 'Pro._Monthly'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Pro. Monthly'),
           fetchSheetData(CONFIG.spreadsheetIdPur, 'Dashboard'),
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Shopify_Orders_Monthly'),
-          fetchSheetData(CONFIG.spreadsheetIdPro, 'Retail_Monthly_Sales'),
-          fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant_Monthly_Sales'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Retail Monthly Sales'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant Monthly Sales'),
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Shopify_SameDay_Monthly')
         ]);
 
