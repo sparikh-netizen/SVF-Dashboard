@@ -5,6 +5,7 @@ const CONFIG = {
   apiKey: 'AIzaSyCVsmz4eMT_pYviQwBKYQtXPgykGQYw9Yg', // ← Keep your existing key
   spreadsheetIdPro: '1fa694tBLbrJbRPQVh0Y9TLKinjSWsLrpOoJININmjXY',
   spreadsheetIdPur: '1wpntBkyUwS16kkJijmCjgwArD7P-6x3djx-ikBB0BzE'
+  ga4PropertyId: '303063921' // ← GA4 Property ID
 };
 
 // Shopify API Configuration
