@@ -6,6 +6,7 @@
   <title>Spice Village Dashboard</title>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.1/dist/chartjs-plugin-annotation.min.js"></script>
   
   <!-- Load config file FIRST -->
   <script src="config.js"></script>
@@ -42,14 +43,17 @@
         <div class="card tile border-blue-500">
           <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Online Sales (MTD)</p>
           <p id="online-mtd" class="text-2xl font-bold text-gray-800">€0</p>
+          <p id="online-target" class="text-xs text-gray-500 mt-2"></p>
         </div>
         <div class="card tile border-green-500">
           <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Retail Sales (MTD)</p>
           <p id="retail-mtd" class="text-2xl font-bold text-gray-800">€0</p>
+          <p id="retail-target" class="text-xs text-gray-500 mt-2"></p>
         </div>
         <div class="card tile border-yellow-500">
           <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Restaurant Sales (MTD)</p>
           <p id="rest-mtd" class="text-2xl font-bold text-gray-800">€0</p>
+          <p id="rest-target" class="text-xs text-gray-500 mt-2"></p>
         </div>
         <div class="card tile border-purple-500">
           <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Net Profit (YTD)</p>
@@ -63,7 +67,7 @@
           <canvas id="salesChart"></canvas>
         </div>
         <div class="card">
-          <h3 class="font-bold mb-4">GP % (Target vs Actual)</h3>
+          <h3 class="font-bold mb-4">GP % (Online & Retail)</h3>
           <canvas id="gpChart"></canvas>
         </div>
         <div class="card">
@@ -81,8 +85,38 @@
   <script>
     // ============================================
     // CONFIG is now loaded from config.js
-    // No need to edit this file anymore!
+    // Monthly Targets
     // ============================================
+    const TARGETS = {
+      online: 90000,
+      retail: 45000,
+      restaurant: 15000,
+      total: 150000
+    };
+
+    // Helper to calculate if on track (based on days passed in month)
+    function calculateProgress(actual, target) {
+      const today = new Date();
+      const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+      const daysPassed = today.getDate();
+      const expectedProgress = (daysPassed / daysInMonth) * target;
+      const percentage = (actual / target * 100).toFixed(0);
+      
+      let status = '';
+      let color = '';
+      if (actual >= expectedProgress * 1.05) {
+        status = '🟢 Ahead';
+        color = '#10B981';
+      } else if (actual >= expectedProgress * 0.95) {
+        status = '🟡 On Track';
+        color = '#F59E0B';
+      } else {
+        status = '🔴 Behind';
+        color = '#EF4444';
+      }
+      
+      return { percentage, status, color };
+    }
 
     // ============================================
     // HELPER FUNCTIONS
@@ -230,10 +264,20 @@
 
       document.getElementById('dashboard-content').classList.remove('hidden');
 
+      // Update MTD tiles with target indicators
       document.getElementById('online-mtd').innerText = '€' + Number(data.mtd.online).toLocaleString();
       document.getElementById('retail-mtd').innerText = '€' + Number(data.mtd.retail).toLocaleString();
       document.getElementById('rest-mtd').innerText = '€' + Number(data.mtd.restaurant).toLocaleString();
       document.getElementById('profit-ytd').innerText = '€' + Number(data.mtd.profitYTD).toLocaleString();
+
+      // Add target progress
+      const onlineProgress = calculateProgress(data.mtd.online, TARGETS.online);
+      const retailProgress = calculateProgress(data.mtd.retail, TARGETS.retail);
+      const restProgress = calculateProgress(data.mtd.restaurant, TARGETS.restaurant);
+      
+      document.getElementById('online-target').innerHTML = `Target: €${TARGETS.online.toLocaleString()} (${onlineProgress.percentage}%) <span style="color: ${onlineProgress.color}; font-weight: bold;">${onlineProgress.status}</span>`;
+      document.getElementById('retail-target').innerHTML = `Target: €${TARGETS.retail.toLocaleString()} (${retailProgress.percentage}%) <span style="color: ${retailProgress.color}; font-weight: bold;">${retailProgress.status}</span>`;
+      document.getElementById('rest-target').innerHTML = `Target: €${TARGETS.restaurant.toLocaleString()} (${restProgress.percentage}%) <span style="color: ${restProgress.color}; font-weight: bold;">${restProgress.status}</span>`;
 
       const commonOpts = { responsive: true, plugins: { legend: { position: 'bottom' } } };
 
@@ -247,7 +291,47 @@
             { label: 'Rest', data: data.charts.rest, backgroundColor: '#F59E0B' }
           ]
         },
-        options: { ...commonOpts, scales: { x: { stacked: true }, y: { stacked: true } } }
+        options: { 
+          ...commonOpts, 
+          scales: { 
+            x: { stacked: true }, 
+            y: { 
+              stacked: true, 
+              beginAtZero: true,
+              ticks: {
+                callback: function(value) {
+                  return '€' + value.toLocaleString();
+                }
+              }
+            } 
+          },
+          plugins: {
+            ...commonOpts.plugins,
+            annotation: {
+              annotations: {
+                targetLine: {
+                  type: 'line',
+                  yMin: TARGETS.total,
+                  yMax: TARGETS.total,
+                  borderColor: '#EF4444',
+                  borderWidth: 2,
+                  borderDash: [10, 5],
+                  label: {
+                    content: 'Target: €' + TARGETS.total.toLocaleString(),
+                    enabled: true,
+                    position: 'end',
+                    backgroundColor: '#EF4444',
+                    color: 'white',
+                    font: {
+                      size: 10,
+                      weight: 'bold'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       });
 
       new Chart(document.getElementById('gpChart'), {
@@ -255,20 +339,46 @@
         data: {
           labels: data.charts.labels,
           datasets: [
-            { label: 'Online GP%', data: data.charts.gpOnline, borderColor: '#3B82F6', tension: 0.3 },
-            { label: 'Retail GP%', data: data.charts.gpRetail, borderColor: '#10B981', tension: 0.3 }
+            { label: 'Online GP%', data: data.charts.gpOnline, borderColor: '#3B82F6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.3, fill: true, borderWidth: 2 },
+            { label: 'Retail GP%', data: data.charts.gpRetail, borderColor: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true, borderWidth: 2 }
           ]
         },
-        options: commonOpts
+        options: {
+          ...commonOpts,
+          scales: {
+            y: {
+              beginAtZero: true,
+              max: 50,
+              ticks: {
+                callback: function(value) {
+                  return value + '%';
+                }
+              }
+            }
+          }
+        }
       });
 
       new Chart(document.getElementById('purchaseChart'), {
         type: 'line',
         data: {
           labels: data.charts.labels,
-          datasets: [{ label: 'Purchase %', data: data.charts.purchasePct, borderColor: '#EF4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', fill: true }]
+          datasets: [{ label: 'Purchase %', data: data.charts.purchasePct, borderColor: '#EF4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', fill: true, borderWidth: 2, tension: 0.3 }]
         },
-        options: commonOpts
+        options: {
+          ...commonOpts,
+          scales: {
+            y: {
+              beginAtZero: true,
+              max: 70,
+              ticks: {
+                callback: function(value) {
+                  return value + '%';
+                }
+              }
+            }
+          }
+        }
       });
 
       new Chart(document.getElementById('expenseChart'), {
@@ -276,11 +386,24 @@
         data: {
           labels: data.charts.labels,
           datasets: [
-            { label: 'Salary % (Total Sales)', data: data.charts.salaryPct, borderColor: '#8B5CF6' },
-            { label: 'Shipping % (Online Only)', data: data.charts.shippingPct, borderColor: '#6366F1' }
+            { label: 'Salary % (Total Sales)', data: data.charts.salaryPct, borderColor: '#8B5CF6', backgroundColor: 'rgba(139, 92, 246, 0.1)', tension: 0.3, borderWidth: 2 },
+            { label: 'Shipping % (Online Only)', data: data.charts.shippingPct, borderColor: '#6366F1', backgroundColor: 'rgba(99, 102, 241, 0.1)', tension: 0.3, borderWidth: 2 }
           ]
         },
-        options: commonOpts
+        options: {
+          ...commonOpts,
+          scales: {
+            y: {
+              beginAtZero: true,
+              max: 25,
+              ticks: {
+                callback: function(value) {
+                  return value + '%';
+                }
+              }
+            }
+          }
+        }
       });
     }
 
