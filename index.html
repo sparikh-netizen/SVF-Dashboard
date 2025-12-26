@@ -39,6 +39,7 @@
 
     <!-- Dashboard Content -->
     <div id="dashboard-content" class="hidden">
+      <!-- MTD Tiles -->
       <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         <div class="card tile border-blue-500">
           <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Online Sales (MTD)</p>
@@ -61,6 +62,7 @@
         </div>
       </div>
 
+      <!-- Sales Charts -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
         <div class="card">
           <h3 class="font-bold mb-4">Sales per Channel</h3>
@@ -80,11 +82,11 @@
         </div>
       </div>
 
-      <!-- Shopify Insights Section -->
+      <!-- Shopify Insights -->
       <div class="mb-4">
         <h2 class="text-xl font-bold text-gray-800 mb-4">📦 Shopify Insights</h2>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
         <div class="card">
           <h3 class="font-bold mb-4">Same Day Delivery % (Last 6 Months)</h3>
           <canvas id="sameDayChart"></canvas>
@@ -93,6 +95,21 @@
           <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Same Day Orders (MTD)</p>
           <p id="sameday-mtd" class="text-2xl font-bold text-gray-800">0%</p>
           <p id="sameday-detail" class="text-xs text-gray-500 mt-2"></p>
+        </div>
+      </div>
+
+      <!-- Google Analytics Insights -->
+      <div class="mb-4">
+        <h2 class="text-xl font-bold text-gray-800 mb-4">📊 Google Analytics Insights</h2>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="card">
+          <h3 class="font-bold mb-4">Web vs Mobile Users (Last 6 Months)</h3>
+          <canvas id="deviceChart"></canvas>
+        </div>
+        <div class="card">
+          <h3 class="font-bold mb-4">Top Cities</h3>
+          <canvas id="cityChart"></canvas>
         </div>
       </div>
     </div>
@@ -126,8 +143,7 @@
       const expectedProgress = (daysPassed / daysInMonth) * target;
       const percentage = (actual / target * 100).toFixed(0);
       
-      let status = '';
-      let color = '';
+      let status = '', color = '';
       if (actual >= expectedProgress * 1.05) {
         status = '🟢 Ahead';
         color = '#10B981';
@@ -161,6 +177,123 @@
         }
       }
       return -1;
+    }
+
+    // ============================================
+    // GOOGLE ANALYTICS 4 API FUNCTIONS
+    // ============================================
+
+    async function fetchGA4Data() {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 6);
+
+      try {
+        // Fetch device data (web vs mobile) - weekly
+        const deviceData = await fetchGA4Report({
+          dateRanges: [{ 
+            startDate: startDate.toISOString().split('T')[0], 
+            endDate: endDate.toISOString().split('T')[0] 
+          }],
+          dimensions: [
+            { name: 'dateWeek' },
+            { name: 'deviceCategory' }
+          ],
+          metrics: [{ name: 'activeUsers' }]
+        });
+
+        // Fetch city data
+        const cityData = await fetchGA4Report({
+          dateRanges: [{ 
+            startDate: startDate.toISOString().split('T')[0], 
+            endDate: endDate.toISOString().split('T')[0] 
+          }],
+          dimensions: [{ name: 'city' }],
+          metrics: [{ name: 'activeUsers' }],
+          limit: 10
+        });
+
+        return { deviceData, cityData };
+      } catch (error) {
+        console.error('GA4 Error:', error);
+        return null;
+      }
+    }
+
+    async function fetchGA4Report(requestBody) {
+      const url = `https://analyticsdata.googleapis.com/v1beta/properties/${CONFIG.ga4PropertyId}:runReport?key=${CONFIG.apiKey}`;
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        throw new Error(`GA4 API error: ${response.status} ${response.statusText}`);
+      }
+
+      return await response.json();
+    }
+
+    function processGA4DeviceData(data) {
+      if (!data || !data.rows) return { labels: [], desktop: [], mobile: [], tablet: [] };
+
+      const weeklyData = {};
+
+      data.rows.forEach(row => {
+        const week = row.dimensionValues[0].value; // dateWeek (YYYYWW format)
+        const device = row.dimensionValues[1].value; // desktop, mobile, tablet
+        const users = parseInt(row.metricValues[0].value) || 0;
+
+        if (!weeklyData[week]) {
+          weeklyData[week] = { desktop: 0, mobile: 0, tablet: 0 };
+        }
+
+        weeklyData[week][device.toLowerCase()] = users;
+      });
+
+      // Sort by week
+      const sortedWeeks = Object.keys(weeklyData).sort();
+      
+      const labels = sortedWeeks.map(week => {
+        // Convert YYYYWW to readable format
+        const year = week.slice(0, 4);
+        const weekNum = week.slice(4);
+        return `W${weekNum}`;
+      });
+
+      const desktop = sortedWeeks.map(week => weeklyData[week].desktop);
+      const mobile = sortedWeeks.map(week => weeklyData[week].mobile);
+      const tablet = sortedWeeks.map(week => weeklyData[week].tablet);
+
+      return { labels, desktop, mobile, tablet };
+    }
+
+    function processGA4CityData(data) {
+      if (!data || !data.rows) return { labels: [], users: [], colors: [] };
+
+      const cities = data.rows
+        .map(row => ({
+          city: row.dimensionValues[0].value,
+          users: parseInt(row.metricValues[0].value) || 0
+        }))
+        .filter(c => c.city !== '(not set)')
+        .sort((a, b) => b.users - a.users)
+        .slice(0, 10);
+
+      const colors = [
+        '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
+        '#EC4899', '#14B8A6', '#F97316', '#6366F1', '#84CC16'
+      ];
+
+      return {
+        labels: cities.map(c => c.city),
+        users: cities.map(c => c.users),
+        colors: colors.slice(0, cities.length)
+      };
     }
 
     // ============================================
@@ -257,18 +390,17 @@
           }
         });
 
-        // SAME DAY DELIVERY DATA (from Google Sheets)
+        // SAME DAY DELIVERY DATA
         sameDayData.slice(1).forEach((row, idx) => {
           if (!row[0]) return;
           
-          const monthKey = row[0]; // e.g., "2025-07"
+          const monthKey = row[0];
           const date = new Date(monthKey + '-01');
           const monthLabel = date.toLocaleString('default', { month: 'short' });
           
           results.sameDay.labels.push(monthLabel);
-          results.sameDay.percentages.push(parseFloat(row[3]) || 0); // Column D (Same Day %)
+          results.sameDay.percentages.push(parseFloat(row[3]) || 0);
           
-          // Check if this is current month (December 2025)
           if (date.getMonth() === 11 && date.getFullYear() === 2025) {
             results.sameDay.currentMonth = {
               percentage: parseFloat(row[3]) || 0,
@@ -298,7 +430,7 @@
         return;
       }
 
-      // Update MTD tiles with target indicators
+      // Update MTD tiles
       document.getElementById('online-mtd').innerText = '€' + Number(data.mtd.online).toLocaleString();
       document.getElementById('retail-mtd').innerText = '€' + Number(data.mtd.retail).toLocaleString();
       document.getElementById('rest-mtd').innerText = '€' + Number(data.mtd.restaurant).toLocaleString();
@@ -314,7 +446,7 @@
 
       const commonOpts = { responsive: true, plugins: { legend: { position: 'bottom' } } };
 
-      // Sales Chart with Target Line
+      // All the existing charts (Sales, GP%, Purchase%, Salary/Shipping%, Same Day)
       new Chart(document.getElementById('salesChart'), {
         type: 'bar',
         data: {
@@ -329,31 +461,16 @@
           ...commonOpts, 
           scales: { 
             x: { stacked: true }, 
-            y: { 
-              stacked: true, 
-              beginAtZero: true,
-              ticks: { callback: (value) => '€' + value.toLocaleString() }
-            } 
+            y: { stacked: true, beginAtZero: true, ticks: { callback: (value) => '€' + value.toLocaleString() } } 
           },
           plugins: {
             ...commonOpts.plugins,
             annotation: {
               annotations: {
                 targetLine: {
-                  type: 'line',
-                  yMin: TARGETS.total,
-                  yMax: TARGETS.total,
-                  borderColor: '#EF4444',
-                  borderWidth: 2,
-                  borderDash: [10, 5],
-                  label: {
-                    content: 'Target: €' + TARGETS.total.toLocaleString(),
-                    enabled: true,
-                    position: 'end',
-                    backgroundColor: '#EF4444',
-                    color: 'white',
-                    font: { size: 10, weight: 'bold' }
-                  }
+                  type: 'line', yMin: TARGETS.total, yMax: TARGETS.total,
+                  borderColor: '#EF4444', borderWidth: 2, borderDash: [10, 5],
+                  label: { content: 'Target: €' + TARGETS.total.toLocaleString(), enabled: true, position: 'end', backgroundColor: '#EF4444', color: 'white', font: { size: 10, weight: 'bold' } }
                 }
               }
             }
@@ -361,7 +478,6 @@
         }
       });
 
-      // GP% Chart
       new Chart(document.getElementById('gpChart'), {
         type: 'line',
         data: {
@@ -371,38 +487,18 @@
             { label: 'Retail GP%', data: data.charts.gpRetail, borderColor: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true, borderWidth: 2 }
           ]
         },
-        options: {
-          ...commonOpts,
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 50,
-              ticks: { callback: (value) => value + '%' }
-            }
-          }
-        }
+        options: { ...commonOpts, scales: { y: { beginAtZero: true, max: 50, ticks: { callback: (value) => value + '%' } } } }
       });
 
-      // Purchase% Chart
       new Chart(document.getElementById('purchaseChart'), {
         type: 'line',
         data: {
           labels: data.charts.labels,
           datasets: [{ label: 'Purchase %', data: data.charts.purchasePct, borderColor: '#EF4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', fill: true, borderWidth: 2, tension: 0.3 }]
         },
-        options: {
-          ...commonOpts,
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 70,
-              ticks: { callback: (value) => value + '%' }
-            }
-          }
-        }
+        options: { ...commonOpts, scales: { y: { beginAtZero: true, max: 70, ticks: { callback: (value) => value + '%' } } } }
       });
 
-      // Salary & Shipping% Chart
       new Chart(document.getElementById('expenseChart'), {
         type: 'line',
         data: {
@@ -412,48 +508,59 @@
             { label: 'Shipping % (Online Only)', data: data.charts.shippingPct, borderColor: '#6366F1', backgroundColor: 'rgba(99, 102, 241, 0.1)', tension: 0.3, borderWidth: 2 }
           ]
         },
-        options: {
-          ...commonOpts,
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 25,
-              ticks: { callback: (value) => value + '%' }
-            }
-          }
-        }
+        options: { ...commonOpts, scales: { y: { beginAtZero: true, max: 25, ticks: { callback: (value) => value + '%' } } } }
       });
 
-      // Same Day Delivery Chart (from Google Sheets)
       new Chart(document.getElementById('sameDayChart'), {
         type: 'line',
         data: {
           labels: data.sameDay.labels,
           datasets: [{
-            label: 'Same Day Delivery %',
-            data: data.sameDay.percentages,
-            borderColor: '#6366F1',
-            backgroundColor: 'rgba(99, 102, 241, 0.1)',
-            tension: 0.3,
-            fill: true,
-            borderWidth: 2
+            label: 'Same Day Delivery %', data: data.sameDay.percentages,
+            borderColor: '#6366F1', backgroundColor: 'rgba(99, 102, 241, 0.1)', tension: 0.3, fill: true, borderWidth: 2
           }]
         },
-        options: {
-          ...commonOpts,
-          scales: {
-            y: {
-              beginAtZero: true,
-              max: 100,
-              ticks: { callback: (value) => value + '%' }
-            }
-          }
-        }
+        options: { ...commonOpts, scales: { y: { beginAtZero: true, max: 100, ticks: { callback: (value) => value + '%' } } } }
       });
 
-      // Update Same Day MTD tile
       document.getElementById('sameday-mtd').innerText = data.sameDay.currentMonth.percentage.toFixed(1) + '%';
       document.getElementById('sameday-detail').innerHTML = `${data.sameDay.currentMonth.sameDay} of ${data.sameDay.currentMonth.total} orders`;
+
+      // ============================================
+      // FETCH AND DRAW GA4 CHARTS
+      // ============================================
+      
+      const ga4Data = await fetchGA4Data();
+      
+      if (ga4Data) {
+        // Device Chart (Web vs Mobile)
+        const deviceChartData = processGA4DeviceData(ga4Data.deviceData);
+        new Chart(document.getElementById('deviceChart'), {
+          type: 'line',
+          data: {
+            labels: deviceChartData.labels,
+            datasets: [
+              { label: 'Desktop', data: deviceChartData.desktop, borderColor: '#3B82F6', backgroundColor: 'rgba(59, 130, 246, 0.1)', tension: 0.3, fill: true, borderWidth: 2 },
+              { label: 'Mobile', data: deviceChartData.mobile, borderColor: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true, borderWidth: 2 }
+            ]
+          },
+          options: { ...commonOpts, scales: { y: { beginAtZero: true, ticks: { callback: (value) => value.toLocaleString() + ' users' } } } }
+        });
+
+        // City Chart (Pie)
+        const cityChartData = processGA4CityData(ga4Data.cityData);
+        new Chart(document.getElementById('cityChart'), {
+          type: 'pie',
+          data: {
+            labels: cityChartData.labels,
+            datasets: [{
+              data: cityChartData.users,
+              backgroundColor: cityChartData.colors
+            }]
+          },
+          options: { ...commonOpts, plugins: { ...commonOpts.plugins, legend: { position: 'right' } } }
+        });
+      }
 
       document.getElementById('loading').classList.add('hidden');
       document.getElementById('dashboard-content').classList.remove('hidden');
