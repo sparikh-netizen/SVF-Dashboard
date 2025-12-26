@@ -8,7 +8,7 @@ const CONFIG = {
   ga4PropertyId: '303063921' // ← GA4 Property ID
 };
 
-// Shopify API Configuration
+// Shopify API Configuration (not needed right now) 
 // const SHOPIFY_CONFIG = {
   // storeUrl: 'spice-village-eu.myshopify.com',
   // accessToken: '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', // ← Your Shopify token
