@@ -1,0 +1,185 @@
+# How to Host Your Dashboard on GitHub Pages
+
+## What is GitHub Pages?
+Free hosting service from GitHub that turns your repository into a live website.
+
+## Step-by-Step Guide
+
+### Step 1: Create a GitHub Account
+1. Go to https://github.com
+2. Click **Sign up**
+3. Create your account (free)
+
+---
+
+### Step 2: Create a New Repository
+1. Once logged in, click the **+** icon (top right)
+2. Select **New repository**
+3. Fill in:
+   - **Repository name:** `spice-village-dashboard` (or any name you like)
+   - **Description:** "Business Dashboard 2025" (optional)
+   - **Public** ✓ (must be public for free GitHub Pages)
+   - **Add a README** ☐ (leave unchecked)
+4. Click **Create repository**
+
+---
+
+### Step 3: Upload Your Dashboard File
+1. You'll see an empty repository page
+2. Click **uploading an existing file** (in the middle of the page)
+3. Drag and drop your `dashboard-WORKING-final.html` file
+4. **IMPORTANT:** Rename it to `index.html` in the filename field
+   - GitHub Pages automatically serves `index.html` as the homepage
+5. Scroll down and click **Commit changes**
+
+---
+
+### Step 4: Enable GitHub Pages
+1. In your repository, click **Settings** (top right tabs)
+2. Scroll down the left sidebar and click **Pages**
+3. Under "Source":
+   - Select: **Deploy from a branch**
+   - Branch: **main** (or master)
+   - Folder: **/ (root)**
+4. Click **Save**
+5. Wait 1-2 minutes for deployment
+
+---
+
+### Step 5: Get Your Live URL
+1. Refresh the Settings → Pages page
+2. You'll see: **"Your site is live at https://yourusername.github.io/spice-village-dashboard/"**
+3. Click the URL to test
+4. Share this URL with anyone!
+
+---
+
+## Quick Visual Guide
+
+```
+GitHub.com
+  ↓
++ New Repository
+  ↓
+Name: spice-village-dashboard
+  ↓
+Upload Files → index.html
+  ↓
+Settings → Pages
+  ↓
+Deploy from branch: main
+  ↓
+https://yourusername.github.io/spice-village-dashboard/
+```
+
+---
+
+## Updating the Dashboard Later
+
+When you want to update the dashboard:
+
+1. Go to your repository on GitHub
+2. Click on `index.html`
+3. Click the **pencil icon** (Edit this file)
+4. Make your changes
+5. Scroll down and click **Commit changes**
+6. Wait 1-2 minutes for GitHub to redeploy
+7. Refresh your live URL
+
+---
+
+## Alternative: GitHub Desktop (Easier for Non-Coders)
+
+### If you want a simpler way:
+
+1. Download **GitHub Desktop**: https://desktop.github.com/
+2. Install and sign in with your GitHub account
+3. Click **File** → **Clone repository**
+4. Select your `spice-village-dashboard` repository
+5. Choose where to save it on your computer
+6. Click **Clone**
+7. Now you have a folder on your computer
+8. Copy your `index.html` file into that folder
+9. GitHub Desktop will show changes
+10. Add a commit message: "Add dashboard"
+11. Click **Commit to main**
+12. Click **Push origin** (top right)
+13. Done! Changes are live in 1-2 minutes
+
+---
+
+## Custom Domain (Optional - Advanced)
+
+If you want your own domain like `dashboard.spicevillage.eu`:
+
+1. Buy a domain (or use existing)
+2. In your domain's DNS settings, add a CNAME record:
+   - Name: `dashboard` (or `www`)
+   - Value: `yourusername.github.io`
+3. In GitHub Settings → Pages:
+   - Enter your custom domain: `dashboard.spicevillage.eu`
+   - Click **Save**
+4. Wait 10-30 minutes for DNS propagation
+
+---
+
+## Troubleshooting
+
+### "Your site is having problems building"
+- Make sure file is named `index.html` (lowercase)
+- Make sure repository is Public
+- Check Settings → Pages is enabled
+
+### "404 Not Found"
+- Wait 2-5 minutes after enabling Pages
+- Clear browser cache (Ctrl+Shift+R)
+- Make sure file is named `index.html`
+
+### Dashboard shows but data is 0
+- Check that your API key is correct in the HTML file
+- Make sure Google Sheets are shared as "Anyone with the link → Viewer"
+- Check browser console (F12) for errors
+
+### Changes not showing
+- GitHub Pages takes 1-2 minutes to rebuild
+- Clear browser cache
+- Try incognito/private window
+
+---
+
+## Advantages of GitHub Pages
+
+✅ **Free** - No cost
+✅ **Fast** - CDN-backed hosting
+✅ **Reliable** - 99.9% uptime
+✅ **Easy** - No server management
+✅ **HTTPS** - Secure by default
+✅ **Version control** - Track all changes
+✅ **Easy updates** - Edit files directly on GitHub
+
+---
+
+## Security Note
+
+Your API key is visible in the HTML source code, but that's OK because:
+- The key is restricted to only Google Sheets API
+- Your spreadsheets are already public
+- The key can only READ, not write
+- You can rotate the key anytime
+
+For extra security, in Google Cloud Console → API Key settings:
+- Add **Application restrictions** → **HTTP referrers**
+- Add: `https://yourusername.github.io/*`
+- This makes the key only work from your GitHub Pages site
+
+---
+
+## Next Steps
+
+1. Create GitHub account
+2. Create repository
+3. Upload `index.html` (renamed from dashboard-WORKING-final.html)
+4. Enable Pages in Settings
+5. Share your live URL!
+
+Need help? Let me know which step you're stuck on!
