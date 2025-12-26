@@ -1,185 +1,310 @@
-# How to Host Your Dashboard on GitHub Pages
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spice Village Dashboard</title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 1.5rem; }
+    .tile { border-left-width: 4px; }
+    .loading { display: inline-block; width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 p-6">
+  <div class="max-w-7xl mx-auto">
+    <div class="flex justify-between items-center mb-8">
+      <h1 class="text-2xl font-bold text-gray-800">Spice Village Performance Dashboard</h1>
+      <span class="text-sm text-gray-500">2025 Fiscal Year</span>
+    </div>
+    
+    <!-- Loading State -->
+    <div id="loading" class="text-center py-12">
+      <div class="loading mx-auto mb-4"></div>
+      <p class="text-gray-600">Loading dashboard data...</p>
+    </div>
 
-## What is GitHub Pages?
-Free hosting service from GitHub that turns your repository into a live website.
+    <!-- Error State -->
+    <div id="error" class="hidden bg-red-50 border border-red-200 rounded-lg p-6 mb-8">
+      <h3 class="text-red-800 font-bold mb-2">Error Loading Dashboard</h3>
+      <p id="error-message" class="text-red-600"></p>
+    </div>
 
-## Step-by-Step Guide
+    <!-- Dashboard Content -->
+    <div id="dashboard-content" class="hidden">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div class="card tile border-blue-500">
+          <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Online Sales (MTD)</p>
+          <p id="online-mtd" class="text-2xl font-bold text-gray-800">€0</p>
+        </div>
+        <div class="card tile border-green-500">
+          <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Retail Sales (MTD)</p>
+          <p id="retail-mtd" class="text-2xl font-bold text-gray-800">€0</p>
+        </div>
+        <div class="card tile border-yellow-500">
+          <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Restaurant Sales (MTD)</p>
+          <p id="rest-mtd" class="text-2xl font-bold text-gray-800">€0</p>
+        </div>
+        <div class="card tile border-purple-500">
+          <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Net Profit (YTD)</p>
+          <p id="profit-ytd" class="text-2xl font-bold text-gray-800">€0</p>
+        </div>
+      </div>
 
-### Step 1: Create a GitHub Account
-1. Go to https://github.com
-2. Click **Sign up**
-3. Create your account (free)
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="card">
+          <h3 class="font-bold mb-4">Sales per Channel</h3>
+          <canvas id="salesChart"></canvas>
+        </div>
+        <div class="card">
+          <h3 class="font-bold mb-4">GP % (Target vs Actual)</h3>
+          <canvas id="gpChart"></canvas>
+        </div>
+        <div class="card">
+          <h3 class="font-bold mb-4">Purchase % of Sales</h3>
+          <canvas id="purchaseChart"></canvas>
+        </div>
+        <div class="card">
+          <h3 class="font-bold mb-4">Salary & Shipping %</h3>
+          <canvas id="expenseChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
 
----
+  <script>
+    // ============================================
+    // CONFIGURATION
+    // ============================================
+    const CONFIG = {
+      apiKey: 'YOUR_GOOGLE_API_KEY', // ← Replace with your API key
+      spreadsheetIdPro: '1fa694tBLbrJbRPQVh0Y9TLKinjSWsLrpOoJININmjXY',
+      spreadsheetIdPur: '1wpntBkyUwS16kkJijmCjgwArD7P-6x3djx-ikBB0BzE'
+    };
 
-### Step 2: Create a New Repository
-1. Once logged in, click the **+** icon (top right)
-2. Select **New repository**
-3. Fill in:
-   - **Repository name:** `spice-village-dashboard` (or any name you like)
-   - **Description:** "Business Dashboard 2025" (optional)
-   - **Public** ✓ (must be public for free GitHub Pages)
-   - **Add a README** ☐ (leave unchecked)
-4. Click **Create repository**
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+    
+    // Parse currency string like "€63,493.06" or "€26,769" to number
+    function parseCurrency(str) {
+      if (!str) return 0;
+      // Remove €, commas, and any spaces, then parse
+      const cleaned = str.toString().replace(/€|,|\s/g, '');
+      return parseFloat(cleaned) || 0;
+    }
 
----
+    async function fetchSheetData(spreadsheetId, sheetName) {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}?key=${CONFIG.apiKey}`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch ${sheetName}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      return data.values || [];
+    }
 
-### Step 3: Upload Your Dashboard File
-1. You'll see an empty repository page
-2. Click **uploading an existing file** (in the middle of the page)
-3. Drag and drop your `dashboard-WORKING-final.html` file
-4. **IMPORTANT:** Rename it to `index.html` in the filename field
-   - GitHub Pages automatically serves `index.html` as the homepage
-5. Scroll down and click **Commit changes**
+    function findCurrentMonthRow(data, targetMonth = 11, targetYear = 2025) {
+      for (let i = 0; i < data.length; i++) {
+        if (!data[i][0]) continue;
+        const date = new Date(data[i][0]);
+        if (!isNaN(date.getTime()) && date.getMonth() === targetMonth && date.getFullYear() === targetYear) {
+          return i;
+        }
+      }
+      return -1;
+    }
 
----
+    // ============================================
+    // MAIN DATA FETCHING
+    // ============================================
+    
+    async function getDashboardData() {
+      try {
+        const [sheetProData, sheetPurData, shopifyData, retailData, restaurantData] = await Promise.all([
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Pro. Monthly'),
+          fetchSheetData(CONFIG.spreadsheetIdPur, 'Dashboard'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Shopify_Orders_Monthly'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Retail Monthly Sales'),
+          fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant Monthly Sales')
+        ]);
 
-### Step 4: Enable GitHub Pages
-1. In your repository, click **Settings** (top right tabs)
-2. Scroll down the left sidebar and click **Pages**
-3. Under "Source":
-   - Select: **Deploy from a branch**
-   - Branch: **main** (or master)
-   - Folder: **/ (root)**
-4. Click **Save**
-5. Wait 1-2 minutes for deployment
+        // Column mapping - EXACT ORIGINAL
+        const col = {
+          month: 0, online: 2, retail: 3, rest: 4, onlineCOGS: 6, retailCOGS: 7, profit: 10, salary: 13, shipping: 14
+        };
 
----
+        let results = {
+          mtd: { online: 0, retail: 0, restaurant: 0, profitYTD: 0 },
+          charts: { labels: [], online: [], retail: [], rest: [], gpOnline: [], gpRetail: [], purchasePct: [], salaryPct: [], shippingPct: [] }
+        };
 
-### Step 5: Get Your Live URL
-1. Refresh the Settings → Pages page
-2. You'll see: **"Your site is live at https://yourusername.github.io/spice-village-dashboard/"**
-3. Click the URL to test
-4. Share this URL with anyone!
+        // ============================================
+        // 1. DYNAMIC MTD VALUES (December 2025)
+        // ============================================
+        
+        // Online Sales MTD - Column F (index 5) from Shopify
+        const shopifyRow = findCurrentMonthRow(shopifyData, 11, 2025);
+        if (shopifyRow >= 0 && shopifyData[shopifyRow][5]) {
+          results.mtd.online = parseCurrency(shopifyData[shopifyRow][5]);
+        }
 
----
+        // Retail Sales MTD - Column C (index 2) from Retail
+        const retailRow = findCurrentMonthRow(retailData, 11, 2025);
+        if (retailRow >= 0 && retailData[retailRow][2]) {
+          results.mtd.retail = parseCurrency(retailData[retailRow][2]);
+        }
 
-## Quick Visual Guide
+        // Restaurant Sales MTD - Column C (index 2) from 3 consecutive rows
+        const restaurantRow = findCurrentMonthRow(restaurantData, 11, 2025);
+        if (restaurantRow >= 0) {
+          const physical = parseCurrency(restaurantData[restaurantRow][2]);
+          const wolt = parseCurrency(restaurantData[restaurantRow + 1]?.[2]);
+          const uber = parseCurrency(restaurantData[restaurantRow + 2]?.[2]);
+          results.mtd.restaurant = physical + wolt + uber;
+        }
 
-```
-GitHub.com
-  ↓
-+ New Repository
-  ↓
-Name: spice-village-dashboard
-  ↓
-Upload Files → index.html
-  ↓
-Settings → Pages
-  ↓
-Deploy from branch: main
-  ↓
-https://yourusername.github.io/spice-village-dashboard/
-```
+        // Net Profit YTD - Sum Column K from Pro. Monthly for all 2025
+        sheetProData.slice(1).forEach(row => {
+          const date = new Date(row[col.month]);
+          if (!isNaN(date.getTime()) && date.getFullYear() === 2025 && row[col.profit]) {
+            results.mtd.profitYTD += parseCurrency(row[col.profit]);
+          }
+        });
 
----
+        // ============================================
+        // 2. PURCHASE MAP - EXACT ORIGINAL
+        // ============================================
+        let purchaseMap = {};
+        sheetPurData.slice(4).forEach(row => {
+          if (row[0]) {
+            let d = new Date(row[0]);
+            purchaseMap[d.getMonth()] = parseCurrency(row[1]);
+          }
+        });
 
-## Updating the Dashboard Later
+        // ============================================
+        // 3. HISTORICAL CHART DATA - EXACT ORIGINAL
+        // ============================================
+        const proData = sheetProData.slice(1);
+        proData.forEach(row => {
+          let d = new Date(row[col.month]);
+          if (d && d.getFullYear() === 2025 && row[col.online] !== "") {
+            let monthLabel = d.toLocaleString('default', { month: 'short' });
+            results.charts.labels.push(monthLabel);
 
-When you want to update the dashboard:
+            let sOnline = parseCurrency(row[col.online]);
+            let sRetail = parseCurrency(row[col.retail]);
+            let sRest = parseCurrency(row[col.rest]);
+            let sTotal = sOnline + sRetail + sRest;
 
-1. Go to your repository on GitHub
-2. Click on `index.html`
-3. Click the **pencil icon** (Edit this file)
-4. Make your changes
-5. Scroll down and click **Commit changes**
-6. Wait 1-2 minutes for GitHub to redeploy
-7. Refresh your live URL
+            results.charts.online.push(sOnline);
+            results.charts.retail.push(sRetail);
+            results.charts.rest.push(sRest);
 
----
+            // GP % Logic - EXACT ORIGINAL
+            let onlineCOGS = parseCurrency(row[col.onlineCOGS]);
+            let retailCOGS = parseCurrency(row[col.retailCOGS]);
+            
+            results.charts.gpOnline.push(sOnline > 0 ? (((sOnline - onlineCOGS) / sOnline) * 100).toFixed(1) : 0);
+            results.charts.gpRetail.push(sRetail > 0 ? (((sRetail - retailCOGS) / sRetail) * 100).toFixed(1) : 0);
 
-## Alternative: GitHub Desktop (Easier for Non-Coders)
+            // Expense Ratios - EXACT ORIGINAL
+            let salary = parseCurrency(row[col.salary]);
+            let shipping = parseCurrency(row[col.shipping]);
+            
+            results.charts.salaryPct.push(sTotal > 0 ? ((salary / sTotal) * 100).toFixed(1) : 0);
+            results.charts.shippingPct.push(sOnline > 0 ? ((shipping / sOnline) * 100).toFixed(1) : 0);
 
-### If you want a simpler way:
+            // Purchase % - EXACT ORIGINAL
+            let pAmt = purchaseMap[d.getMonth()] || 0;
+            results.charts.purchasePct.push(sTotal > 0 ? ((pAmt / sTotal) * 100).toFixed(1) : 0);
+          }
+        });
 
-1. Download **GitHub Desktop**: https://desktop.github.com/
-2. Install and sign in with your GitHub account
-3. Click **File** → **Clone repository**
-4. Select your `spice-village-dashboard` repository
-5. Choose where to save it on your computer
-6. Click **Clone**
-7. Now you have a folder on your computer
-8. Copy your `index.html` file into that folder
-9. GitHub Desktop will show changes
-10. Add a commit message: "Add dashboard"
-11. Click **Commit to main**
-12. Click **Push origin** (top right)
-13. Done! Changes are live in 1-2 minutes
+        return results;
+      } catch (e) {
+        return { error: e.toString() };
+      }
+    }
 
----
+    // ============================================
+    // DRAW FUNCTION - EXACT ORIGINAL
+    // ============================================
+    
+    async function draw() {
+      const data = await getDashboardData();
+      
+      document.getElementById('loading').classList.add('hidden');
 
-## Custom Domain (Optional - Advanced)
+      if (data.error) {
+        document.getElementById('error').classList.remove('hidden');
+        document.getElementById('error-message').innerText = data.error;
+        return;
+      }
 
-If you want your own domain like `dashboard.spicevillage.eu`:
+      document.getElementById('dashboard-content').classList.remove('hidden');
 
-1. Buy a domain (or use existing)
-2. In your domain's DNS settings, add a CNAME record:
-   - Name: `dashboard` (or `www`)
-   - Value: `yourusername.github.io`
-3. In GitHub Settings → Pages:
-   - Enter your custom domain: `dashboard.spicevillage.eu`
-   - Click **Save**
-4. Wait 10-30 minutes for DNS propagation
+      // Update MTD tiles
+      document.getElementById('online-mtd').innerText = '€' + Number(data.mtd.online).toLocaleString();
+      document.getElementById('retail-mtd').innerText = '€' + Number(data.mtd.retail).toLocaleString();
+      document.getElementById('rest-mtd').innerText = '€' + Number(data.mtd.restaurant).toLocaleString();
+      document.getElementById('profit-ytd').innerText = '€' + Number(data.mtd.profitYTD).toLocaleString();
 
----
+      const commonOpts = { responsive: true, plugins: { legend: { position: 'bottom' } } };
 
-## Troubleshooting
+      // EXACT ORIGINAL CHARTS
+      new Chart(document.getElementById('salesChart'), {
+        type: 'bar',
+        data: {
+          labels: data.charts.labels,
+          datasets: [
+            { label: 'Online', data: data.charts.online, backgroundColor: '#3B82F6' },
+            { label: 'Retail', data: data.charts.retail, backgroundColor: '#10B981' },
+            { label: 'Rest', data: data.charts.rest, backgroundColor: '#F59E0B' }
+          ]
+        },
+        options: { ...commonOpts, scales: { x: { stacked: true }, y: { stacked: true } } }
+      });
 
-### "Your site is having problems building"
-- Make sure file is named `index.html` (lowercase)
-- Make sure repository is Public
-- Check Settings → Pages is enabled
+      new Chart(document.getElementById('gpChart'), {
+        type: 'line',
+        data: {
+          labels: data.charts.labels,
+          datasets: [
+            { label: 'Online GP%', data: data.charts.gpOnline, borderColor: '#3B82F6', tension: 0.3 },
+            { label: 'Retail GP%', data: data.charts.gpRetail, borderColor: '#10B981', tension: 0.3 }
+          ]
+        },
+        options: commonOpts
+      });
 
-### "404 Not Found"
-- Wait 2-5 minutes after enabling Pages
-- Clear browser cache (Ctrl+Shift+R)
-- Make sure file is named `index.html`
+      new Chart(document.getElementById('purchaseChart'), {
+        type: 'line',
+        data: {
+          labels: data.charts.labels,
+          datasets: [{ label: 'Purchase %', data: data.charts.purchasePct, borderColor: '#EF4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', fill: true }]
+        },
+        options: commonOpts
+      });
 
-### Dashboard shows but data is 0
-- Check that your API key is correct in the HTML file
-- Make sure Google Sheets are shared as "Anyone with the link → Viewer"
-- Check browser console (F12) for errors
+      new Chart(document.getElementById('expenseChart'), {
+        type: 'line',
+        data: {
+          labels: data.charts.labels,
+          datasets: [
+            { label: 'Salary % (Total Sales)', data: data.charts.salaryPct, borderColor: '#8B5CF6' },
+            { label: 'Shipping % (Online Only)', data: data.charts.shippingPct, borderColor: '#6366F1' }
+          ]
+        },
+        options: commonOpts
+      });
+    }
 
-### Changes not showing
-- GitHub Pages takes 1-2 minutes to rebuild
-- Clear browser cache
-- Try incognito/private window
-
----
-
-## Advantages of GitHub Pages
-
-✅ **Free** - No cost
-✅ **Fast** - CDN-backed hosting
-✅ **Reliable** - 99.9% uptime
-✅ **Easy** - No server management
-✅ **HTTPS** - Secure by default
-✅ **Version control** - Track all changes
-✅ **Easy updates** - Edit files directly on GitHub
-
----
-
-## Security Note
-
-Your API key is visible in the HTML source code, but that's OK because:
-- The key is restricted to only Google Sheets API
-- Your spreadsheets are already public
-- The key can only READ, not write
-- You can rotate the key anytime
-
-For extra security, in Google Cloud Console → API Key settings:
-- Add **Application restrictions** → **HTTP referrers**
-- Add: `https://yourusername.github.io/*`
-- This makes the key only work from your GitHub Pages site
-
----
-
-## Next Steps
-
-1. Create GitHub account
-2. Create repository
-3. Upload `index.html` (renamed from dashboard-WORKING-final.html)
-4. Enable Pages in Settings
-5. Share your live URL!
-
-Need help? Let me know which step you're stuck on!
+    // Load dashboard
+    draw();
+  </script>
+</body>
+</html>
