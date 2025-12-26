@@ -6,6 +6,10 @@
   <title>Spice Village Dashboard</title>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  
+  <!-- Load config file FIRST -->
+  <script src="config.js"></script>
+  
   <style>
     .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 1.5rem; }
     .tile { border-left-width: 4px; }
@@ -76,22 +80,16 @@
 
   <script>
     // ============================================
-    // CONFIGURATION
+    // CONFIG is now loaded from config.js
+    // No need to edit this file anymore!
     // ============================================
-    const CONFIG = {
-      apiKey: 'AIzaSyCVsmz4eMT_pYviQwBKYQtXPgykGQYw9Yg', // ← Replace with your API key
-      spreadsheetIdPro: '1fa694tBLbrJbRPQVh0Y9TLKinjSWsLrpOoJININmjXY',
-      spreadsheetIdPur: '1wpntBkyUwS16kkJijmCjgwArD7P-6x3djx-ikBB0BzE'
-    };
 
     // ============================================
     // HELPER FUNCTIONS
     // ============================================
     
-    // Parse currency string like "€63,493.06" or "€26,769" to number
     function parseCurrency(str) {
       if (!str) return 0;
-      // Remove €, commas, and any spaces, then parse
       const cleaned = str.toString().replace(/€|,|\s/g, '');
       return parseFloat(cleaned) || 0;
     }
@@ -131,7 +129,6 @@
           fetchSheetData(CONFIG.spreadsheetIdPro, 'Restaurant Monthly Sales')
         ]);
 
-        // Column mapping - EXACT ORIGINAL
         const col = {
           month: 0, online: 2, retail: 3, rest: 4, onlineCOGS: 6, retailCOGS: 7, profit: 10, salary: 13, shipping: 14
         };
@@ -141,23 +138,17 @@
           charts: { labels: [], online: [], retail: [], rest: [], gpOnline: [], gpRetail: [], purchasePct: [], salaryPct: [], shippingPct: [] }
         };
 
-        // ============================================
-        // 1. DYNAMIC MTD VALUES (December 2025)
-        // ============================================
-        
-        // Online Sales MTD - Column F (index 5) from Shopify
+        // MTD VALUES
         const shopifyRow = findCurrentMonthRow(shopifyData, 11, 2025);
         if (shopifyRow >= 0 && shopifyData[shopifyRow][5]) {
           results.mtd.online = parseCurrency(shopifyData[shopifyRow][5]);
         }
 
-        // Retail Sales MTD - Column C (index 2) from Retail
         const retailRow = findCurrentMonthRow(retailData, 11, 2025);
         if (retailRow >= 0 && retailData[retailRow][2]) {
           results.mtd.retail = parseCurrency(retailData[retailRow][2]);
         }
 
-        // Restaurant Sales MTD - Column C (index 2) from 3 consecutive rows
         const restaurantRow = findCurrentMonthRow(restaurantData, 11, 2025);
         if (restaurantRow >= 0) {
           const physical = parseCurrency(restaurantData[restaurantRow][2]);
@@ -166,7 +157,6 @@
           results.mtd.restaurant = physical + wolt + uber;
         }
 
-        // Net Profit YTD - Sum Column K from Pro. Monthly for all 2025
         sheetProData.slice(1).forEach(row => {
           const date = new Date(row[col.month]);
           if (!isNaN(date.getTime()) && date.getFullYear() === 2025 && row[col.profit]) {
@@ -174,9 +164,7 @@
           }
         });
 
-        // ============================================
-        // 2. PURCHASE MAP - EXACT ORIGINAL
-        // ============================================
+        // PURCHASE MAP
         let purchaseMap = {};
         sheetPurData.slice(4).forEach(row => {
           if (row[0]) {
@@ -185,9 +173,7 @@
           }
         });
 
-        // ============================================
-        // 3. HISTORICAL CHART DATA - EXACT ORIGINAL
-        // ============================================
+        // HISTORICAL CHART DATA
         const proData = sheetProData.slice(1);
         proData.forEach(row => {
           let d = new Date(row[col.month]);
@@ -204,21 +190,18 @@
             results.charts.retail.push(sRetail);
             results.charts.rest.push(sRest);
 
-            // GP % Logic - EXACT ORIGINAL
             let onlineCOGS = parseCurrency(row[col.onlineCOGS]);
             let retailCOGS = parseCurrency(row[col.retailCOGS]);
             
             results.charts.gpOnline.push(sOnline > 0 ? (((sOnline - onlineCOGS) / sOnline) * 100).toFixed(1) : 0);
             results.charts.gpRetail.push(sRetail > 0 ? (((sRetail - retailCOGS) / sRetail) * 100).toFixed(1) : 0);
 
-            // Expense Ratios - EXACT ORIGINAL
             let salary = parseCurrency(row[col.salary]);
             let shipping = parseCurrency(row[col.shipping]);
             
             results.charts.salaryPct.push(sTotal > 0 ? ((salary / sTotal) * 100).toFixed(1) : 0);
             results.charts.shippingPct.push(sOnline > 0 ? ((shipping / sOnline) * 100).toFixed(1) : 0);
 
-            // Purchase % - EXACT ORIGINAL
             let pAmt = purchaseMap[d.getMonth()] || 0;
             results.charts.purchasePct.push(sTotal > 0 ? ((pAmt / sTotal) * 100).toFixed(1) : 0);
           }
@@ -231,7 +214,7 @@
     }
 
     // ============================================
-    // DRAW FUNCTION - EXACT ORIGINAL
+    // DRAW FUNCTION
     // ============================================
     
     async function draw() {
@@ -247,7 +230,6 @@
 
       document.getElementById('dashboard-content').classList.remove('hidden');
 
-      // Update MTD tiles
       document.getElementById('online-mtd').innerText = '€' + Number(data.mtd.online).toLocaleString();
       document.getElementById('retail-mtd').innerText = '€' + Number(data.mtd.retail).toLocaleString();
       document.getElementById('rest-mtd').innerText = '€' + Number(data.mtd.restaurant).toLocaleString();
@@ -255,7 +237,6 @@
 
       const commonOpts = { responsive: true, plugins: { legend: { position: 'bottom' } } };
 
-      // EXACT ORIGINAL CHARTS
       new Chart(document.getElementById('salesChart'), {
         type: 'bar',
         data: {
@@ -303,7 +284,6 @@
       });
     }
 
-    // Load dashboard
     draw();
   </script>
 </body>
