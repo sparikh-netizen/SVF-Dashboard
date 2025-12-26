@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shopify Debug - Spice Village</title>
+  <script src="config.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+    .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; }
+    h1 { color: #333; }
+    .debug-section { margin: 20px 0; padding: 20px; background: #f9f9f9; border-radius: 4px; border-left: 4px solid #3B82F6; }
+    .order { margin: 10px 0; padding: 10px; background: white; border: 1px solid #ddd; border-radius: 4px; }
+    .shipping-line { color: #10B981; font-weight: bold; }
+    .tag { display: inline-block; background: #EF4444; color: white; padding: 2px 8px; border-radius: 3px; margin: 2px; font-size: 12px; }
+    pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 4px; overflow-x: auto; }
+    button { background: #3B82F6; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+    button:hover { background: #2563EB; }
+    .loading { color: #666; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔍 Shopify Orders Debug Tool</h1>
+    <p>This tool will fetch recent orders and show you exactly where the "Same Day" delivery information is stored.</p>
+    
+    <button onclick="debugOrders()">Fetch & Analyze Orders</button>
+    
+    <div id="loading" class="loading" style="display: none;">
+      <p>Fetching orders from Shopify...</p>
+    </div>
+    
+    <div id="results"></div>
+  </div>
+
+  <script>
+    async function fetchShopifyOrders(startDate, endDate) {
+      const url = `https://${SHOPIFY_CONFIG.storeUrl}/admin/api/${SHOPIFY_CONFIG.apiVersion}/orders.json?status=any&created_at_min=${startDate}&created_at_max=${endDate}&limit=50`;
+      
+      const response = await fetch(url, {
+        headers: {
+          'X-Shopify-Access-Token': SHOPIFY_CONFIG.accessToken,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Shopify API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.orders || [];
+    }
+
+    async function debugOrders() {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('results').innerHTML = '';
+      
+      try {
+        // Fetch last 50 orders from current month
+        const today = new Date();
+        const startDate = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
+        const endDate = today.toISOString();
+        
+        const orders = await fetchShopifyOrders(startDate, endDate);
+        
+        if (orders.length === 0) {
+          document.getElementById('results').innerHTML = '<div class="debug-section"><h2>No orders found!</h2><p>There are no orders in the current month.</p></div>';
+          document.getElementById('loading').style.display = 'none';
+          return;
+        }
+
+        // Analyze orders
+        let html = `<div class="debug-section">
+          <h2>📊 Summary</h2>
+          <p><strong>Total Orders Found:</strong> ${orders.length}</p>
+          <p><strong>Date Range:</strong> ${new Date(startDate).toLocaleDateString()} to ${new Date(endDate).toLocaleDateString()}</p>
+        </div>`;
+
+        // Collect all unique shipping methods
+        const shippingMethods = new Set();
+        const tagsFound = new Set();
+        let sameDayCount = 0;
+
+        orders.forEach(order => {
+          // Check shipping lines
+          if (order.shipping_lines && order.shipping_lines.length > 0) {
+            order.shipping_lines.forEach(line => {
+              if (line.title) {
+                shippingMethods.add(line.title);
+                if (line.title.toLowerCase().includes('same day')) {
+                  sameDayCount++;
+                }
+              }
+            });
+          }
+
+          // Check tags
+          if (order.tags) {
+            order.tags.split(',').forEach(tag => {
+              tagsFound.add(tag.trim());
+            });
+          }
+        });
+
+        html += `<div class="debug-section">
+          <h2>🚚 Unique Shipping Methods Found</h2>
+          <p>These are all the shipping method names in your orders:</p>
+          <ul>`;
+        
+        shippingMethods.forEach(method => {
+          const hasSameDay = method.toLowerCase().includes('same day');
+          html += `<li><span class="${hasSameDay ? 'shipping-line' : ''}">${method}</span> ${hasSameDay ? '✅ (Contains "same day")' : ''}</li>`;
+        });
+        
+        html += `</ul>
+          <p><strong>Orders with "Same Day" in shipping:</strong> ${sameDayCount}</p>
+        </div>`;
+
+        html += `<div class="debug-section">
+          <h2>🏷️ Order Tags Found</h2>
+          <p>These are all the tags used in your orders:</p>
+          <div>`;
+        
+        tagsFound.forEach(tag => {
+          html += `<span class="tag">${tag}</span>`;
+        });
+        
+        html += `</div></div>`;
+
+        // Show first 5 orders in detail
+        html += `<div class="debug-section">
+          <h2>📦 Sample Orders (First 5)</h2>`;
+        
+        orders.slice(0, 5).forEach((order, idx) => {
+          html += `<div class="order">
+            <h3>Order #${order.order_number} (${order.name})</h3>
+            <p><strong>Date:</strong> ${new Date(order.created_at).toLocaleString()}</p>
+            <p><strong>Total:</strong> €${order.total_price}</p>
+            <p><strong>Shipping Lines:</strong></p>
+            <pre>${JSON.stringify(order.shipping_lines, null, 2)}</pre>
+            <p><strong>Tags:</strong> ${order.tags || 'None'}</p>
+            <p><strong>Note Attributes:</strong></p>
+            <pre>${JSON.stringify(order.note_attributes, null, 2)}</pre>
+          </div>`;
+        });
+
+        html += `</div>`;
+
+        // Show recommendation
+        html += `<div class="debug-section" style="border-left-color: #10B981;">
+          <h2>💡 Recommendation</h2>
+          <p>Based on the analysis above, tell Claude:</p>
+          <ol>
+            <li>Which shipping method name(s) represent "Same Day Delivery"</li>
+            <li>Or if it's in tags instead</li>
+            <li>Or if it's in a custom field</li>
+          </ol>
+          <p>Then Claude can update the code to look in the right place!</p>
+        </div>`;
+
+        document.getElementById('results').innerHTML = html;
+        
+      } catch (error) {
+        document.getElementById('results').innerHTML = `<div class="debug-section" style="border-left-color: #EF4444;">
+          <h2>❌ Error</h2>
+          <p>${error.message}</p>
+          <p>Check:</p>
+          <ul>
+            <li>Is your Shopify access token correct in config.js?</li>
+            <li>Does the token have "read_orders" permission?</li>
+            <li>Is your store URL correct? (${SHOPIFY_CONFIG.storeUrl})</li>
+          </ul>
+        </div>`;
+      }
+      
+      document.getElementById('loading').style.display = 'none';
+    }
+  </script>
+</body>
+</html>
