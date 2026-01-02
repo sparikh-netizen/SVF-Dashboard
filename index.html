@@ -168,7 +168,7 @@
       return data.values || [];
     }
 
-    function findCurrentMonthRow(data, targetMonth = 11, targetYear = 2025) {
+    function findCurrentMonthRow(data, targetMonth = 0, targetYear = 2025) {
       for (let i = 0; i < data.length; i++) {
         if (!data[i][0]) continue;
         const date = new Date(data[i][0]);
@@ -257,17 +257,17 @@
         };
 
         // MTD VALUES
-        const shopifyRow = findCurrentMonthRow(shopifyData, 11, 2025);
+        const shopifyRow = findCurrentMonthRow(shopifyData, 0, 2026);
         if (shopifyRow >= 0 && shopifyData[shopifyRow][5]) {
           results.mtd.online = parseCurrency(shopifyData[shopifyRow][5]);
         }
 
-        const retailRow = findCurrentMonthRow(retailData, 11, 2025);
+        const retailRow = findCurrentMonthRow(retailData, 0, 2026);
         if (retailRow >= 0 && retailData[retailRow][2]) {
           results.mtd.retail = parseCurrency(retailData[retailRow][2]);
         }
 
-        const restaurantRow = findCurrentMonthRow(restaurantData, 11, 2025);
+        const restaurantRow = findCurrentMonthRow(restaurantData, 0, 2026);
         if (restaurantRow >= 0) {
           const physical = parseCurrency(restaurantData[restaurantRow][2]);
           const wolt = parseCurrency(restaurantData[restaurantRow + 1]?.[2]);
@@ -336,7 +336,7 @@
           results.sameDay.labels.push(monthLabel);
           results.sameDay.percentages.push(parseFloat(row[3]) || 0);
           
-          if (date.getMonth() === 11 && date.getFullYear() === 2025) {
+          if (date.getMonth() === 0 && date.getFullYear() === 2026) {
             results.sameDay.currentMonth = {
               percentage: parseFloat(row[3]) || 0,
               sameDay: parseInt(row[2]) || 0,
