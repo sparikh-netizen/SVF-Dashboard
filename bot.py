@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import anthropic
+import pytz
 import requests
 from dotenv import load_dotenv
 from telegram import Update
@@ -24,6 +25,9 @@ logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=loggin
 logger = logging.getLogger(__name__)
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# Flour Cloud POS system uses Berlin local dates
+BERLIN_TZ = pytz.timezone("Europe/Berlin")
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +131,40 @@ def shopify_product_sales(period: str, product: str) -> dict:
 # Flour Cloud (retail POS)
 # ---------------------------------------------------------------------------
 
-def fetch_flour_cloud_docs(start: datetime, end: datetime) -> list:
+def _berlin_date_range(period: str):
+    """Return (start_date, end_date) as date objects in Europe/Berlin local time.
+
+    Flour Cloud document dates are Berlin-local calendar dates, so we compute
+    the range directly in that timezone rather than converting UTC boundaries.
+    """
+    from datetime import date as _date
+    today = datetime.now(BERLIN_TZ).date()
+
+    if period == "today":
+        return today, today
+    if period == "yesterday":
+        yesterday = today - timedelta(days=1)
+        return yesterday, yesterday
+    if period == "last_7_days":
+        return today - timedelta(days=7), today
+    if period == "this_week":
+        monday = today - timedelta(days=today.weekday())
+        return monday, today
+    if period == "last_week":
+        this_monday = today - timedelta(days=today.weekday())
+        last_monday = this_monday - timedelta(days=7)
+        last_sunday = this_monday - timedelta(days=1)
+        return last_monday, last_sunday
+    if period == "this_month":
+        return today.replace(day=1), today
+    if period == "last_month":
+        first_of_this_month = today.replace(day=1)
+        last_month_last = first_of_this_month - timedelta(days=1)
+        return last_month_last.replace(day=1), last_month_last
+    return today, today  # fallback
+
+
+def fetch_flour_cloud_docs(start_date, end_date) -> list:
     headers = {"Authorization": f"Bearer {FLOUR_CLOUD_TOKEN}"}
     params = {"limit": 1000, "type": "R", "sort": "-date"}
     response = requests.get(
@@ -139,17 +176,13 @@ def fetch_flour_cloud_docs(start: datetime, end: datetime) -> list:
     response.raise_for_status()
 
     data = response.json()
-    # API may wrap docs under different keys
     if isinstance(data, list):
         docs = data
     else:
         docs = data.get("docs") or data.get("documents") or data.get("data") or []
 
-    logger.info("Flour Cloud: fetched %d raw docs", len(docs))
+    logger.info("Flour Cloud: fetched %d raw docs, filtering %s → %s (Berlin)", len(docs), start_date, end_date)
 
-    # Filter to the requested date range (date field is "YYYY-MM-DD" or ISO string)
-    start_date = start.date()
-    end_date = end.date()
     filtered = []
     for doc in docs:
         raw_date = str(doc.get("date", ""))[:10]
@@ -162,8 +195,8 @@ def fetch_flour_cloud_docs(start: datetime, end: datetime) -> list:
 
 
 def flour_cloud_sales(period: str) -> dict:
-    start, end = get_date_range(period)
-    docs = fetch_flour_cloud_docs(start, end)
+    start_date, end_date = _berlin_date_range(period)
+    docs = fetch_flour_cloud_docs(start_date, end_date)
     total_rev = 0.0
     for doc in docs:
         for item in doc.get("items", []):
