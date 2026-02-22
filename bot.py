@@ -204,6 +204,19 @@ def flour_cloud_sales(period: str) -> dict:
     return {"revenue": total_rev, "transaction_count": len(docs), "period": period}
 
 
+def flour_cloud_product_sales(period: str, product: str) -> dict:
+    start_date, end_date = _berlin_date_range(period)
+    docs = fetch_flour_cloud_docs(start_date, end_date)
+    needle = product.lower()
+    total_qty, total_rev = 0, 0.0
+    for doc in docs:
+        for item in doc.get("items", []):
+            if needle in str(item.get("name", "")).lower():
+                total_qty += int(item.get("amount", 0))
+                total_rev += float(item.get("totalIncVat", 0))
+    return {"product": product, "quantity": total_qty, "revenue": total_rev, "period": period}
+
+
 # ---------------------------------------------------------------------------
 # Claude intent parsing
 # ---------------------------------------------------------------------------
@@ -228,6 +241,7 @@ Channel rules:
 - "total", "overall", "combined", "all channels", "all" → total
 - "compare", "vs", "versus", "online and retail", "retail and online" → compare
 - If no channel mentioned → null (defaults to online/Shopify)
+- Channel rules apply equally when a product is named
 
 Period rules:
 - "last week" → last_week, "this week" → this_week, "past 7 days" → last_7_days
@@ -270,14 +284,35 @@ def fmt_period(data: dict, channel_label: str) -> str:
     )
 
 
-def fmt_product(data: dict) -> str:
+def fmt_product(data: dict, channel_label: str = "") -> str:
     label = PERIOD_LABELS.get(data["period"], data["period"])
+    prefix = f"{channel_label} — " if channel_label else ""
     if data["quantity"] == 0:
-        return f"No paid sales found for \"{data['product']}\" {label}."
+        channel_note = f" on {channel_label}" if channel_label else ""
+        return f"No sales found for \"{data['product']}\" {label}{channel_note}."
     return (
-        f"\"{data['product']}\" — {label}\n"
+        f"{prefix}\"{data['product']}\" — {label}\n"
         f"Revenue: €{data['revenue']:,.2f}\n"
         f"Units sold: {data['quantity']}"
+    )
+
+
+def fmt_product_cross_channel(shopify: dict, fc: dict) -> str:
+    product = shopify["product"]
+    label = PERIOD_LABELS.get(shopify["period"], shopify["period"])
+    combined_rev = shopify["revenue"] + fc["revenue"]
+    combined_qty = shopify["quantity"] + fc["quantity"]
+
+    if combined_qty == 0 and combined_rev == 0:
+        return f"No sales found for \"{product}\" {label} on either channel."
+
+    return (
+        f"\"{product}\" — {label}\n"
+        f"\n"
+        f"Online (Shopify):     €{shopify['revenue']:,.2f}  |  Units: {shopify['quantity']}\n"
+        f"Retail (Flour Cloud): €{fc['revenue']:,.2f}  |  Units: {fc['quantity']}\n"
+        f"\n"
+        f"Combined: €{combined_rev:,.2f}  |  Units: {combined_qty}"
     )
 
 
@@ -314,7 +349,8 @@ HELP_TEXT = (
     "• Retail sales yesterday?\n"
     "• Compare online and retail last week\n"
     "• Total sales this month?\n"
-    "• How much basmati rice did I sell this week?"
+    "• How much basmati rice did I sell this week?\n"
+    "• Mishti sales yesterday online and retail?"
 )
 
 
@@ -358,9 +394,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         if intent == "sales_by_product":
-            # Product sales only supported on Shopify for now
-            data = shopify_product_sales(period, product)
-            reply = fmt_product(data)
+            if channel in ("total", "compare"):
+                shopify_data = shopify_product_sales(period, product)
+                fc_data = flour_cloud_product_sales(period, product)
+                reply = fmt_product_cross_channel(shopify_data, fc_data)
+            elif channel == "retail":
+                fc_data = flour_cloud_product_sales(period, product)
+                reply = fmt_product(fc_data, "Retail (Flour Cloud)")
+            else:
+                # Default: online only
+                shopify_data = shopify_product_sales(period, product)
+                reply = fmt_product(shopify_data)
 
         elif channel == "compare":
             shopify_data = shopify_sales(period)
