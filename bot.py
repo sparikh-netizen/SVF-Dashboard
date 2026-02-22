@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 import anthropic
@@ -23,6 +23,9 @@ FLOUR_CLOUD_TOKEN = os.getenv("FLOUR_CLOUD_TOKEN")
 
 _raw = os.getenv("ALLOWED_USER_IDS", "")
 ALLOWED_USER_IDS = [int(uid.strip()) for uid in _raw.split(",") if uid.strip()]
+
+_raw_chat_id = os.getenv("DAILY_REPORT_CHAT_ID", "")
+DAILY_REPORT_CHAT_ID = int(_raw_chat_id.strip()) if _raw_chat_id.strip() else None
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -478,6 +481,43 @@ HELP_TEXT = (
 
 
 # ---------------------------------------------------------------------------
+# Daily scheduled report
+# ---------------------------------------------------------------------------
+
+async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not DAILY_REPORT_CHAT_ID:
+        logger.warning("DAILY_REPORT_CHAT_ID not set — skipping daily report")
+        return
+
+    try:
+        retail_yday = flour_cloud_sales("yesterday")
+        retail_mtd  = flour_cloud_sales("this_month")
+        online_yday = shopify_sales("yesterday")
+        online_mtd  = shopify_sales("this_month")
+
+        now_berlin    = datetime.now(BERLIN_TZ)
+        yday_label    = (now_berlin - timedelta(days=1)).strftime("%d %b %Y")
+        month_label   = now_berlin.strftime("%B %Y")
+
+        msg = (
+            f"Good morning! Daily Sales Briefing\n"
+            f"\n"
+            f"Yesterday ({yday_label})\n"
+            f"  Retail   €{retail_yday['revenue']:>10,.2f}\n"
+            f"  Online   €{online_yday['revenue']:>10,.2f}\n"
+            f"\n"
+            f"Month to Date ({month_label})\n"
+            f"  Retail   €{retail_mtd['revenue']:>10,.2f}\n"
+            f"  Online   €{online_mtd['revenue']:>10,.2f}"
+        )
+    except Exception as exc:
+        logger.error("Daily report fetch error: %s", exc)
+        msg = f"Daily report failed to load: {exc}"
+
+    await context.bot.send_message(chat_id=DAILY_REPORT_CHAT_ID, text=msg)
+
+
+# ---------------------------------------------------------------------------
 # Telegram handler
 # ---------------------------------------------------------------------------
 
@@ -588,6 +628,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def main() -> None:
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    if DAILY_REPORT_CHAT_ID:
+        app.job_queue.run_daily(
+            send_daily_report,
+            time=dt_time(4, 0, 0, tzinfo=BERLIN_TZ),
+        )
+        logger.info("Daily report scheduled at 04:00 CET/CEST → chat %s", DAILY_REPORT_CHAT_ID)
+    else:
+        logger.warning("DAILY_REPORT_CHAT_ID not set — daily report disabled")
+
     logger.info("Bot is running. Press Ctrl+C to stop.")
     app.run_polling()
 
