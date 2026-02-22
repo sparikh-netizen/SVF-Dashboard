@@ -436,38 +436,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ---------------------------------------------------------------------------
-# Debug (temporary)
-# ---------------------------------------------------------------------------
-
-def debug_product_sales(keyword: str, period: str = "yesterday") -> None:
-    start, end = get_date_range(period)
-    orders = fetch_shopify_orders(start, end)
-    needle = keyword.lower()
-
-    matches = []
-    for order in orders:
-        for item in order.get("line_items", []):
-            if needle in item["title"].lower():
-                matches.append({
-                    "order_id": order["id"],
-                    "created_at": order["created_at"],
-                    "title": item["title"],
-                    "price": float(item["price"]),
-                    "quantity": item["quantity"],
-                    "line_total": float(item["price"]) * item["quantity"],
-                })
-
-    print(f"\nShopify matches for '{keyword}' ({period}) — {len(matches)} line items\n")
-    grand_total = 0.0
-    for m in matches:
-        print(f"  Order {m['order_id']}  {m['created_at']}")
-        print(f"    {m['title']}")
-        print(f"    €{m['price']:.2f} x {m['quantity']} = €{m['line_total']:.2f}")
-        grand_total += m["line_total"]
-    print(f"\nTotal: €{grand_total:.2f}")
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
