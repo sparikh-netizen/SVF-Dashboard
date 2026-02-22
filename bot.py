@@ -2,11 +2,14 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import anthropic
 import pytz
 import requests
 from dotenv import load_dotenv
+from google.oauth2 import service_account
+from googleapiclient.discovery import build as google_build
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
@@ -28,6 +31,16 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # Flour Cloud POS system uses Berlin local dates
 BERLIN_TZ = pytz.timezone("Europe/Berlin")
+
+# Gmail inboxes to search
+GMAIL_INBOXES = [
+    "invoices@spicevillage.eu",
+    "svfproducts@spicevillage.eu",
+    "info@spicevillage.eu",
+    "sparikh@spicevillage.eu",
+]
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+_SERVICE_ACCOUNT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service_account.json")
 
 
 # ---------------------------------------------------------------------------
@@ -221,21 +234,105 @@ def flour_cloud_product_sales(period: str, product: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Gmail
+# ---------------------------------------------------------------------------
+
+def _load_service_account_info() -> dict:
+    """Load service account creds from file (local) or env var (Railway)."""
+    if os.path.exists(_SERVICE_ACCOUNT_FILE):
+        with open(_SERVICE_ACCOUNT_FILE) as f:
+            return json.load(f)
+    raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if raw:
+        return json.loads(raw)
+    raise RuntimeError("No service account credentials found — set GOOGLE_SERVICE_ACCOUNT_JSON env var on Railway")
+
+
+def _gmail_service(email: str):
+    info = _load_service_account_info()
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=GMAIL_SCOPES
+    ).with_subject(email)
+    return google_build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+
+def _fmt_email_date(raw: str) -> str:
+    try:
+        return parsedate_to_datetime(raw).strftime("%d %b %Y %H:%M")
+    except Exception:
+        return raw
+
+
+def search_inbox(email: str, query: str, max_results: int = 3) -> list:
+    svc = _gmail_service(email)
+    res = svc.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+    messages = res.get("messages", [])
+    results = []
+    for msg in messages:
+        detail = svc.users().messages().get(
+            userId="me",
+            id=msg["id"],
+            format="metadata",
+            metadataHeaders=["Subject", "From", "Date"],
+        ).execute()
+        hdrs = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
+        results.append({
+            "subject": hdrs.get("Subject", "(no subject)"),
+            "from":    hdrs.get("From", ""),
+            "date":    _fmt_email_date(hdrs.get("Date", "")),
+            "link":    f"https://mail.google.com/mail/u/0/#all/{msg['id']}",
+        })
+    return results
+
+
+def gmail_search_all(query: str) -> dict:
+    """Search all inboxes. Returns {email: [message, ...]}."""
+    results = {}
+    for email in GMAIL_INBOXES:
+        try:
+            results[email] = search_inbox(email, query)
+        except Exception as exc:
+            logger.error("Gmail error for %s: %s", email, exc)
+            results[email] = []
+    return results
+
+
+def fmt_gmail_results(results: dict, query: str) -> str:
+    any_found = any(msgs for msgs in results.values())
+    if not any_found:
+        return f"No emails found matching \"{query}\" across all inboxes."
+
+    lines = [f"Gmail search: \"{query}\"\n"]
+    for email, messages in results.items():
+        if not messages:
+            continue
+        lines.append(email)
+        for msg in messages:
+            lines.append(f"  {msg['date']}  {msg['from']}")
+            lines.append(f"  {msg['subject']}")
+            lines.append(f"  {msg['link']}")
+            lines.append("")
+    return "\n".join(lines).strip()
+
+
+# ---------------------------------------------------------------------------
 # Claude intent parsing
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You parse sales questions for Spice Village (South Asian grocery, Dublin).
+You parse messages for Spice Village (South Asian grocery, Dublin).
 It has two sales channels: Shopify (online orders) and Flour Cloud (retail/in-store POS).
+It has 4 Gmail inboxes: invoices@spicevillage.eu, svfproducts@spicevillage.eu, info@spicevillage.eu, sparikh@spicevillage.eu.
 
 Return ONLY valid JSON — no explanation, no markdown fences.
 
 Schema:
 {
-  "intent": "sales_by_period" | "sales_by_product" | "unknown",
+  "intent": "sales_by_period" | "sales_by_product" | "gmail_search" | "unknown",
   "period": "today" | "yesterday" | "last_7_days" | "this_week" | "last_week" | "this_month" | "last_month" | null,
   "channel": "online" | "retail" | "total" | "compare" | null,
-  "product": "<product name>" | null
+  "product": "<product name>" | null,
+  "search_query": "<gmail search terms>" | null
 }
 
 Channel rules:
@@ -251,16 +348,21 @@ Period rules:
 - "this month" → this_month, "last month" → last_month
 - If no period mentioned → today
 
+Gmail rules:
+- intent = gmail_search when: "find invoice", "find email", "search email", "any email", "invoice from", "email about", "did we get an email"
+- search_query = the supplier name, topic, or keyword to search for (clean Gmail search string)
+- period/channel/product = null for gmail_search
+
 Other rules:
-- If a product name is mentioned, intent = sales_by_product
-- If not a sales/revenue/orders question, intent = unknown
+- If a product name is mentioned (not an email search), intent = sales_by_product
+- If none of the above match, intent = unknown
 """
 
 
 def parse_intent(message: str) -> dict:
     response = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=150,
+        max_tokens=200,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": message}],
     )
@@ -353,7 +455,9 @@ HELP_TEXT = (
     "• Compare online and retail last week\n"
     "• Total sales this month?\n"
     "• How much basmati rice did I sell this week?\n"
-    "• Mishti sales yesterday online and retail?"
+    "• Mishti sales yesterday online and retail?\n"
+    "• Find invoice from TRS\n"
+    "• Any email about the Ashoka delivery?"
 )
 
 
@@ -380,23 +484,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     intent = parsed.get("intent", "unknown")
     period = parsed.get("period") or "today"
-    channel = parsed.get("channel")  # online | retail | total | compare | None
+    channel = parsed.get("channel")
     product = parsed.get("product")
+    search_query = parsed.get("search_query")
 
-    logger.info("intent=%s period=%s channel=%s product=%s", intent, period, channel, product)
+    logger.info("intent=%s period=%s channel=%s product=%s search_query=%s", intent, period, channel, product, search_query)
 
     if intent == "unknown":
         await update.message.reply_text(HELP_TEXT)
         return
 
-    # Determine which sources to fetch based on channel
-    needs_shopify = channel in (None, "online", "total", "compare")
-    needs_flour = channel in ("retail", "total", "compare")
-
     await update.message.reply_text("Checking...")
 
     try:
-        if intent == "sales_by_product":
+        if intent == "gmail_search":
+            if not search_query:
+                reply = "What should I search for? Try: \"find invoice from TRS\" or \"email about delivery\"."
+            else:
+                results = gmail_search_all(search_query)
+                reply = fmt_gmail_results(results, search_query)
+
+        elif intent == "sales_by_product":
             if channel in ("total", "compare"):
                 shopify_data = shopify_product_sales(period, product)
                 fc_data = flour_cloud_product_sales(period, product)
