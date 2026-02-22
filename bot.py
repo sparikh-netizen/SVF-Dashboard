@@ -92,9 +92,34 @@ def fetch_orders(start: datetime, end: datetime) -> list:
         "created_at_max": end.isoformat(),
         "limit": 250,
     }
-    response = requests.get(url, headers=headers, params=params, timeout=10)
-    response.raise_for_status()
-    return response.json().get("orders", [])
+
+    all_orders = []
+    while True:
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        page = response.json().get("orders", [])
+        all_orders.extend(page)
+
+        # Shopify paginates via Link header; stop if fewer than 250 returned
+        if len(page) < 250:
+            break
+        link = response.headers.get("Link", "")
+        next_url = _parse_next_link(link)
+        if not next_url:
+            break
+        # For subsequent pages use the full URL Shopify gives us
+        url = next_url
+        params = {}
+
+    return all_orders
+
+
+def _parse_next_link(link_header: str):
+    """Extract the 'next' page URL from a Shopify Link header."""
+    for part in link_header.split(","):
+        if 'rel="next"' in part:
+            return part.split(";")[0].strip().strip("<>")
+    return None
 
 
 def sales_by_period(period: str) -> dict:
