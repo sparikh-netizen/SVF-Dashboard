@@ -23,6 +23,7 @@ Runs 24/7 on Railway. Interface is Telegram only.
 - ANTHROPIC_API_KEY: in .env
 - FLOUR_CLOUD_TOKEN: in .env
 - GOOGLE_API_KEY: in .env
+- GOOGLE_SERVICE_ACCOUNT_JSON: set as Railway env var (contents of service_account.json)
 
 ## Shopify Details
 - API Version: 2024-10
@@ -45,13 +46,38 @@ Runs 24/7 on Railway. Interface is Telegram only.
 - Query Shopify and other APIs in real time when asked
 
 ## What's built so far
-- `bot.py` — Telegram bot, runs with `python3 bot.py`
-- `requirements.txt` — pip dependencies (python-telegram-bot, requests, python-dotenv)
-- Answers Shopify sales queries: "sales today", "revenue today", "shopify today", etc.
-- Queries Shopify Orders API (paid orders since UTC midnight) and returns revenue + order count
+
+### Bot infrastructure
+- `bot.py` — single-file Telegram bot, deployed on Railway (project: cooperative-laughter)
+- `requirements.txt` — python-telegram-bot, requests, python-dotenv, anthropic, pytz, google-auth, google-api-python-client
+- Natural language intent parsing via Claude Haiku (claude-haiku-4-5-20251001)
+- Whitelist support via ALLOWED_USER_IDS env var
+
+### Shopify (online channel)
+- Sales by period: today, yesterday, last 7 days, this week, last week, this month, last month
+- Sales by product keyword (searches line item titles)
+- Fetches all orders excluding refunded/voided; paginated with Link header support
+- Timeout: 30s
+
+### Flour Cloud (retail POS channel)
+- Base URL: https://flour.host/v3/documents?limit=1000&type=R&sort=-date
+- Date filtering in Europe/Berlin timezone (store POS timezone)
+- Skips cancelled items
+- Item fields: title (name), amount (qty), totalIncVat (revenue)
+
+### Cross-channel queries
+- "retail sales yesterday" → Flour Cloud only
+- "online sales last week" → Shopify only
+- "total sales this month" → combined figure
+- "compare online and retail" → side-by-side breakdown
+- All of the above work for product-level queries too
+
+### Gmail search
+- Searches 4 inboxes: invoices@, svfproducts@, info@, sparikh@spicevillage.eu
+- Auth: service_account.json locally / GOOGLE_SERVICE_ACCOUNT_JSON env var on Railway
+- Domain-wide delegation on spicevillage.eu Google Workspace
+- Returns top 3 results per inbox with subject, sender, date, direct Gmail link
 
 ## Current priorities
-1. Deploy to Railway (always-on)
-2. Morning briefing (revenue + low stock + calendar)
-3. Gmail invoice finder
-4. Picker workflow (order replacements + refunds via Telegram)
+1. Morning briefing (revenue + low stock + calendar)
+2. Picker workflow (order replacements + refunds via Telegram)
