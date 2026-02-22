@@ -200,6 +200,8 @@ def flour_cloud_sales(period: str) -> dict:
     total_rev = 0.0
     for doc in docs:
         for item in doc.get("items", []):
+            if item.get("cancelled"):
+                continue
             total_rev += float(item.get("totalIncVat", 0))
     return {"revenue": total_rev, "transaction_count": len(docs), "period": period}
 
@@ -211,7 +213,9 @@ def flour_cloud_product_sales(period: str, product: str) -> dict:
     total_qty, total_rev = 0, 0.0
     for doc in docs:
         for item in doc.get("items", []):
-            if needle in str(item.get("name", "")).lower():
+            if item.get("cancelled"):
+                continue
+            if needle in str(item.get("title", "")).lower():
                 total_qty += int(item.get("amount", 0))
                 total_rev += float(item.get("totalIncVat", 0))
     return {"product": product, "quantity": total_qty, "revenue": total_rev, "period": period}
