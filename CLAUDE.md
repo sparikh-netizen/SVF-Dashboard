@@ -6,9 +6,25 @@ It connects to Shopify, Flour Cloud, Gmail, and Google Calendar.
 Runs 24/7 on Railway. Interface is Telegram only.
 
 ## Business Context
-- Spice Village is a South Asian grocery business based in Dublin
+- SVF Products GmbH — South Asian grocery business based in Berlin, Germany
 - Two sales channels: Shopify (online) + Flour Cloud (retail POS)
 - Owner: Harsh (sparikh-netizen on Github)
+
+## Company Details
+- Legal name: SVF Products GmbH
+- Address: Tempelhofer Damm 206, 12099 Berlin
+- Website: www.spicevillage.eu
+- Email: svfproducts@spicevillage.eu
+- Invoices email: invoices@spicevillage.eu
+- Phone: +49 30 8965 7586
+- Tax Number: 29/553/32289
+- VAT Number: DE363532317
+- Handelsregister: Charlottenburg HRB 256768 B
+- EORI: DE260532672959166
+- Managing Directors: Nikunj Patel, Alpa Parikh
+- IBAN: DE38100101237197421588
+- BIC: QNTODEB2XXX
+- PayPal: svfproducts@spicevillage.eu
 
 ## Tech Stack
 - Python (backend)

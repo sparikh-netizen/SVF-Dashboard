@@ -320,15 +320,27 @@ def fmt_gmail_results(results: dict, query: str) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You parse messages for Spice Village (South Asian grocery, Dublin).
+You parse messages for SVF Products GmbH, trading as Spice Village (South Asian grocery, Berlin, Germany).
 It has two sales channels: Shopify (online orders) and Flour Cloud (retail/in-store POS).
 It has 4 Gmail inboxes: invoices@spicevillage.eu, svfproducts@spicevillage.eu, info@spicevillage.eu, sparikh@spicevillage.eu.
+
+Company details (use when asked):
+- Legal name: SVF Products GmbH
+- Address: Tempelhofer Damm 206, 12099 Berlin
+- Website: www.spicevillage.eu
+- Email: svfproducts@spicevillage.eu | Invoices: invoices@spicevillage.eu
+- Phone: +49 30 8965 7586
+- Tax Number: 29/553/32289 | VAT: DE363532317
+- Handelsregister: Charlottenburg HRB 256768 B | EORI: DE260532672959166
+- Managing Directors: Nikunj Patel, Alpa Parikh
+- IBAN: DE38100101237197421588 | BIC: QNTODEB2XXX
+- PayPal: svfproducts@spicevillage.eu
 
 Return ONLY valid JSON — no explanation, no markdown fences.
 
 Schema:
 {
-  "intent": "sales_by_period" | "sales_by_product" | "gmail_search" | "unknown",
+  "intent": "sales_by_period" | "sales_by_product" | "gmail_search" | "company_info" | "unknown",
   "period": "today" | "yesterday" | "last_7_days" | "this_week" | "last_week" | "this_month" | "last_month" | null,
   "channel": "online" | "retail" | "total" | "compare" | null,
   "product": "<product name>" | null,
@@ -352,6 +364,10 @@ Gmail rules:
 - intent = gmail_search when: "find invoice", "find email", "search email", "any email", "invoice from", "email about", "did we get an email"
 - search_query = the supplier name, topic, or keyword to search for (clean Gmail search string)
 - period/channel/product = null for gmail_search
+
+Company info rules:
+- intent = company_info when asked for: address, IBAN, VAT, tax number, EORI, bank details, phone, managing directors, Handelsregister, PayPal, website, company name, legal details
+- For company_info, return the relevant detail(s) in search_query field as a short label e.g. "IBAN", "address", "VAT", "all"
 
 Other rules:
 - If a product name is mentioned (not an email search), intent = sales_by_product
@@ -497,7 +513,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Checking...")
 
     try:
-        if intent == "gmail_search":
+        if intent == "company_info":
+            reply = (
+                "SVF Products GmbH\n"
+                "Tempelhofer Damm 206, 12099 Berlin\n"
+                "www.spicevillage.eu\n"
+                "\n"
+                "Email: svfproducts@spicevillage.eu\n"
+                "Invoices: invoices@spicevillage.eu\n"
+                "Phone: +49 30 8965 7586\n"
+                "PayPal: svfproducts@spicevillage.eu\n"
+                "\n"
+                "Tax Nr: 29/553/32289\n"
+                "VAT: DE363532317\n"
+                "Handelsregister: Charlottenburg HRB 256768 B\n"
+                "EORI: DE260532672959166\n"
+                "\n"
+                "Managing Directors: Nikunj Patel, Alpa Parikh\n"
+                "\n"
+                "IBAN: DE38100101237197421588\n"
+                "BIC: QNTODEB2XXX"
+            )
+
+        elif intent == "gmail_search":
             if not search_query:
                 reply = "What should I search for? Try: \"find invoice from TRS\" or \"email about delivery\"."
             else:
