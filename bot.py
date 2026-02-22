@@ -15,6 +15,7 @@ SHOPIFY_STORE = os.getenv("SHOPIFY_STORE")
 SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+FLOUR_CLOUD_TOKEN = os.getenv("FLOUR_CLOUD_TOKEN")
 
 _raw = os.getenv("ALLOWED_USER_IDS", "")
 ALLOWED_USER_IDS = [int(uid.strip()) for uid in _raw.split(",") if uid.strip()]
@@ -29,42 +30,29 @@ claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 # Date ranges
 # ---------------------------------------------------------------------------
 
-def get_date_range(period: str) -> tuple[datetime, datetime]:
+def get_date_range(period: str):
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     if period == "today":
         return today_start, now
-
     if period == "yesterday":
-        start = today_start - timedelta(days=1)
-        end = today_start - timedelta(seconds=1)
-        return start, end
-
+        return today_start - timedelta(days=1), today_start - timedelta(seconds=1)
     if period == "last_7_days":
         return now - timedelta(days=7), now
-
     if period == "this_week":
         monday = today_start - timedelta(days=today_start.weekday())
         return monday, now
-
     if period == "last_week":
         this_monday = today_start - timedelta(days=today_start.weekday())
-        last_monday = this_monday - timedelta(days=7)
-        last_sunday_end = this_monday - timedelta(seconds=1)
-        return last_monday, last_sunday_end
-
+        return this_monday - timedelta(days=7), this_monday - timedelta(seconds=1)
     if period == "this_month":
         return today_start.replace(day=1), now
-
     if period == "last_month":
         first_of_this_month = today_start.replace(day=1)
         last_month_end = first_of_this_month - timedelta(seconds=1)
-        last_month_start = last_month_end.replace(day=1)
-        return last_month_start, last_month_end
-
-    # fallback
-    return today_start, now
+        return last_month_end.replace(day=1), last_month_end
+    return today_start, now  # fallback
 
 
 PERIOD_LABELS = {
@@ -82,7 +70,14 @@ PERIOD_LABELS = {
 # Shopify
 # ---------------------------------------------------------------------------
 
-def fetch_orders(start: datetime, end: datetime) -> list:
+def _parse_next_link(link_header: str):
+    for part in link_header.split(","):
+        if 'rel="next"' in part:
+            return part.split(";")[0].strip().strip("<>")
+    return None
+
+
+def fetch_shopify_orders(start: datetime, end: datetime) -> list:
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/orders.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
     params = {
@@ -92,63 +87,88 @@ def fetch_orders(start: datetime, end: datetime) -> list:
         "created_at_max": end.isoformat(),
         "limit": 250,
     }
-
     all_orders = []
     while True:
         response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
         page = response.json().get("orders", [])
         all_orders.extend(page)
-
-        # Shopify paginates via Link header; stop if fewer than 250 returned
         if len(page) < 250:
             break
-        link = response.headers.get("Link", "")
-        next_url = _parse_next_link(link)
+        next_url = _parse_next_link(response.headers.get("Link", ""))
         if not next_url:
             break
-        # For subsequent pages use the full URL Shopify gives us
         url = next_url
         params = {}
-
     return all_orders
 
 
-def _parse_next_link(link_header: str):
-    """Extract the 'next' page URL from a Shopify Link header."""
-    for part in link_header.split(","):
-        if 'rel="next"' in part:
-            return part.split(";")[0].strip().strip("<>")
-    return None
-
-
-def sales_by_period(period: str) -> dict:
+def shopify_sales(period: str) -> dict:
     start, end = get_date_range(period)
-    orders = fetch_orders(start, end)
+    orders = fetch_shopify_orders(start, end)
     revenue = sum(float(o["total_price"]) for o in orders)
     return {"revenue": revenue, "order_count": len(orders), "period": period}
 
 
-def sales_by_product(period: str, product: str) -> dict:
+def shopify_product_sales(period: str, product: str) -> dict:
     start, end = get_date_range(period)
-    orders = fetch_orders(start, end)
-
+    orders = fetch_shopify_orders(start, end)
     needle = product.lower()
-    total_qty = 0
-    total_revenue = 0.0
-
+    total_qty, total_rev = 0, 0.0
     for order in orders:
         for item in order.get("line_items", []):
             if needle in item["title"].lower():
                 total_qty += item["quantity"]
-                total_revenue += float(item["price"]) * item["quantity"]
+                total_rev += float(item["price"]) * item["quantity"]
+    return {"product": product, "quantity": total_qty, "revenue": total_rev, "period": period}
 
-    return {
-        "product": product,
-        "quantity": total_qty,
-        "revenue": total_revenue,
-        "period": period,
-    }
+
+# ---------------------------------------------------------------------------
+# Flour Cloud (retail POS)
+# ---------------------------------------------------------------------------
+
+def fetch_flour_cloud_docs(start: datetime, end: datetime) -> list:
+    headers = {"Authorization": f"Bearer {FLOUR_CLOUD_TOKEN}"}
+    params = {"limit": 1000, "type": "R", "sort": "-date"}
+    response = requests.get(
+        "https://flour.host/v3/documents",
+        headers=headers,
+        params=params,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    # API may wrap docs under different keys
+    if isinstance(data, list):
+        docs = data
+    else:
+        docs = data.get("docs") or data.get("documents") or data.get("data") or []
+
+    logger.info("Flour Cloud: fetched %d raw docs", len(docs))
+
+    # Filter to the requested date range (date field is "YYYY-MM-DD" or ISO string)
+    start_date = start.date()
+    end_date = end.date()
+    filtered = []
+    for doc in docs:
+        raw_date = str(doc.get("date", ""))[:10]
+        try:
+            if start_date <= datetime.fromisoformat(raw_date).date() <= end_date:
+                filtered.append(doc)
+        except ValueError:
+            continue
+    return filtered
+
+
+def flour_cloud_sales(period: str) -> dict:
+    start, end = get_date_range(period)
+    docs = fetch_flour_cloud_docs(start, end)
+    total_rev = 0.0
+    for doc in docs:
+        for item in doc.get("items", []):
+            total_rev += float(item.get("totalIncVat", 0))
+    return {"revenue": total_rev, "transaction_count": len(docs), "period": period}
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +176,8 @@ def sales_by_product(period: str, product: str) -> dict:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You parse sales questions for a Shopify store called Spice Village (South Asian grocery, Dublin, Ireland).
+You parse sales questions for Spice Village (South Asian grocery, Dublin).
+It has two sales channels: Shopify (online orders) and Flour Cloud (retail/in-store POS).
 
 Return ONLY valid JSON — no explanation, no markdown fences.
 
@@ -164,15 +185,25 @@ Schema:
 {
   "intent": "sales_by_period" | "sales_by_product" | "unknown",
   "period": "today" | "yesterday" | "last_7_days" | "this_week" | "last_week" | "this_month" | "last_month" | null,
+  "channel": "online" | "retail" | "total" | "compare" | null,
   "product": "<product name>" | null
 }
 
-Rules:
+Channel rules:
+- "online", "shopify", "website", "web orders" → online
+- "retail", "in store", "in-store", "shop", "flour cloud", "pos", "walk-in" → retail
+- "total", "overall", "combined", "all channels", "all" → total
+- "compare", "vs", "versus", "online and retail", "retail and online" → compare
+- If no channel mentioned → null (defaults to online/Shopify)
+
+Period rules:
 - "last week" → last_week, "this week" → this_week, "past 7 days" → last_7_days
 - "this month" → this_month, "last month" → last_month
-- If a product is named, intent = sales_by_product
-- If no period is mentioned, default period = today
-- If the message is not a sales/revenue/orders question, intent = unknown
+- If no period mentioned → today
+
+Other rules:
+- If a product name is mentioned, intent = sales_by_product
+- If not a sales/revenue/orders question, intent = unknown
 """
 
 
@@ -184,7 +215,6 @@ def parse_intent(message: str) -> dict:
         messages=[{"role": "user", "content": message}],
     )
     text = response.content[0].text.strip()
-    # Strip accidental markdown code fences
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
@@ -196,16 +226,18 @@ def parse_intent(message: str) -> dict:
 # Response formatting
 # ---------------------------------------------------------------------------
 
-def format_period_response(data: dict) -> str:
+def fmt_period(data: dict, channel_label: str) -> str:
     label = PERIOD_LABELS.get(data["period"], data["period"])
+    count_key = "order_count" if "order_count" in data else "transaction_count"
+    count_label = "Orders" if "order_count" in data else "Transactions"
     return (
-        f"Shopify sales — {label}\n"
+        f"{channel_label} — {label}\n"
         f"Revenue: €{data['revenue']:,.2f}\n"
-        f"Orders:  {data['order_count']}"
+        f"{count_label}: {data[count_key]}"
     )
 
 
-def format_product_response(data: dict) -> str:
+def fmt_product(data: dict) -> str:
     label = PERIOD_LABELS.get(data["period"], data["period"])
     if data["quantity"] == 0:
         return f"No paid sales found for \"{data['product']}\" {label}."
@@ -216,11 +248,39 @@ def format_product_response(data: dict) -> str:
     )
 
 
+def fmt_compare(shopify: dict, fc: dict) -> str:
+    label = PERIOD_LABELS.get(shopify["period"], shopify["period"])
+    total = shopify["revenue"] + fc["revenue"]
+    return (
+        f"Sales comparison — {label}\n"
+        f"\n"
+        f"Online (Shopify)\n"
+        f"  Revenue: €{shopify['revenue']:,.2f}  |  Orders: {shopify['order_count']}\n"
+        f"\n"
+        f"Retail (Flour Cloud)\n"
+        f"  Revenue: €{fc['revenue']:,.2f}  |  Transactions: {fc['transaction_count']}\n"
+        f"\n"
+        f"Combined total: €{total:,.2f}"
+    )
+
+
+def fmt_total(shopify: dict, fc: dict) -> str:
+    label = PERIOD_LABELS.get(shopify["period"], shopify["period"])
+    total = shopify["revenue"] + fc["revenue"]
+    return (
+        f"Total sales — {label}\n"
+        f"Combined: €{total:,.2f}\n"
+        f"  Online: €{shopify['revenue']:,.2f} ({shopify['order_count']} orders)\n"
+        f"  Retail: €{fc['revenue']:,.2f} ({fc['transaction_count']} transactions)"
+    )
+
+
 HELP_TEXT = (
     "I can answer questions like:\n"
     "• What were my sales today?\n"
-    "• Revenue yesterday?\n"
-    "• Sales last week / this month?\n"
+    "• Retail sales yesterday?\n"
+    "• Compare online and retail last week\n"
+    "• Total sales this month?\n"
     "• How much basmati rice did I sell this week?"
 )
 
@@ -231,7 +291,6 @@ HELP_TEXT = (
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-
     if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
         logger.info("Ignoring unauthorised user %s", user_id)
         return
@@ -240,38 +299,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text:
         return
 
-    # Parse intent with Claude
     try:
         parsed = parse_intent(text)
     except Exception as exc:
         logger.error("Intent parse error: %s", exc)
-        await update.message.reply_text(
-            "Sorry, I had trouble understanding that.\n\n" + HELP_TEXT
-        )
+        await update.message.reply_text("Sorry, I had trouble understanding that.\n\n" + HELP_TEXT)
         return
 
     intent = parsed.get("intent", "unknown")
     period = parsed.get("period") or "today"
+    channel = parsed.get("channel")  # online | retail | total | compare | None
     product = parsed.get("product")
 
-    logger.info("intent=%s period=%s product=%s", intent, period, product)
+    logger.info("intent=%s period=%s channel=%s product=%s", intent, period, channel, product)
 
     if intent == "unknown":
         await update.message.reply_text(HELP_TEXT)
         return
 
-    await update.message.reply_text("Checking Shopify...")
+    # Determine which sources to fetch based on channel
+    needs_shopify = channel in (None, "online", "total", "compare")
+    needs_flour = channel in ("retail", "total", "compare")
+
+    await update.message.reply_text("Checking...")
 
     try:
-        if intent == "sales_by_product" and product:
-            data = sales_by_product(period, product)
-            reply = format_product_response(data)
+        if intent == "sales_by_product":
+            # Product sales only supported on Shopify for now
+            data = shopify_product_sales(period, product)
+            reply = fmt_product(data)
+
+        elif channel == "compare":
+            shopify_data = shopify_sales(period)
+            fc_data = flour_cloud_sales(period)
+            reply = fmt_compare(shopify_data, fc_data)
+
+        elif channel == "total":
+            shopify_data = shopify_sales(period)
+            fc_data = flour_cloud_sales(period)
+            reply = fmt_total(shopify_data, fc_data)
+
+        elif channel == "retail":
+            fc_data = flour_cloud_sales(period)
+            reply = fmt_period(fc_data, "Retail (Flour Cloud)")
+
         else:
-            data = sales_by_period(period)
-            reply = format_period_response(data)
+            # Default: Shopify / online
+            shopify_data = shopify_sales(period)
+            reply = fmt_period(shopify_data, "Online (Shopify)")
+
     except Exception as exc:
-        logger.error("Shopify error: %s", exc)
-        reply = f"Couldn't fetch Shopify data: {exc}"
+        logger.error("Data fetch error: %s", exc)
+        reply = f"Couldn't fetch data: {exc}"
 
     await update.message.reply_text(reply)
 
