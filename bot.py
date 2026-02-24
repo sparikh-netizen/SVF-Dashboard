@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -20,6 +21,8 @@ SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 FLOUR_CLOUD_TOKEN = os.getenv("FLOUR_CLOUD_TOKEN")
+RESTAURANT_SHEET_ID = "1BiiLjs30NF_O6xZz_O-G4bfgcbQnGP6GuRW12vgJJKo"
+SUPPLIER_SHEET_ID   = "1JMfhCB-af8DNnbYNe2Any2oakbNRJHOFvdFZXDMq1qg"
 
 _raw = os.getenv("ALLOWED_USER_IDS", "")
 ALLOWED_USER_IDS = [int(uid.strip()) for uid in _raw.split(",") if uid.strip()]
@@ -237,6 +240,192 @@ def flour_cloud_product_sales(period: str, product: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Restaurant sales (Google Sheets)
+# ---------------------------------------------------------------------------
+
+def _fetch_restaurant_tab(tab_name: str, find_date_str: str = None) -> dict:
+    """
+    Fetch restaurant sales from one monthly tab.
+    Returns {"mtd": float, "daily": float|None}
+    find_date_str: date in DD/MM/YYYY format to look up the daily column.
+    """
+    info = _load_service_account_info()
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    )
+    svc = google_build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+    # Locate the column for the requested date
+    date_col = None
+    if find_date_str:
+        row3 = svc.spreadsheets().values().get(
+            spreadsheetId=RESTAURANT_SHEET_ID,
+            range=f"'{tab_name}'!A3:AZ3",
+        ).execute().get("values", [[]])[0]
+        for i, val in enumerate(row3):
+            if val == find_date_str:
+                date_col = i
+                break
+        if date_col is None:
+            logger.warning("Restaurant sheet: date %s not found in row 3 of %s", find_date_str, tab_name)
+
+    # Fetch all rows in the data area (wide enough to cover daily columns)
+    rows = svc.spreadsheets().values().get(
+        spreadsheetId=RESTAURANT_SHEET_ID,
+        range=f"'{tab_name}'!A200:AZ350",
+    ).execute().get("values", [])
+
+    def _parse(val):
+        try:
+            return float(str(val).replace("€", "").replace(",", "").strip())
+        except ValueError:
+            return None
+
+    for row in rows:
+        if len(row) > 3 and "restaurant sales" in str(row[3]).lower():
+            mtd   = _parse(row[4]) if len(row) > 4 else None
+            daily = _parse(row[date_col]) if (date_col is not None and date_col < len(row)) else None
+            return {"mtd": mtd or 0.0, "daily": daily}
+
+    return {"mtd": 0.0, "daily": None}
+
+
+def restaurant_sales_all() -> dict:
+    """Return {"yesterday": float, "mtd": float} fetching from the sheet."""
+    now_berlin = datetime.now(BERLIN_TZ)
+    yesterday  = now_berlin - timedelta(days=1)
+    yday_tab   = yesterday.strftime("%B %Y")
+    mtd_tab    = now_berlin.strftime("%B %Y")
+    yday_str   = yesterday.strftime("%d/%m/%Y")
+
+    if yday_tab == mtd_tab:
+        result = _fetch_restaurant_tab(yday_tab, yday_str)
+        logger.info("Restaurant sales — yesterday: €%.2f  MTD: €%.2f", result["daily"] or 0, result["mtd"])
+        return {"yesterday": result["daily"] or 0.0, "mtd": result["mtd"]}
+    else:
+        # Month boundary: yesterday was in a different month
+        yday_result = _fetch_restaurant_tab(yday_tab, yday_str)
+        mtd_result  = _fetch_restaurant_tab(mtd_tab)
+        logger.info("Restaurant sales (cross-month) — yesterday: €%.2f  MTD: €%.2f",
+                    yday_result["daily"] or 0, mtd_result["mtd"])
+        return {"yesterday": yday_result["daily"] or 0.0, "mtd": mtd_result["mtd"]}
+
+
+# ---------------------------------------------------------------------------
+# Supplier outstanding (Google Sheets)
+# ---------------------------------------------------------------------------
+
+def _supplier_sheets_svc():
+    info = _load_service_account_info()
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    )
+    return google_build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+def _find_supplier_tab(svc, query: str):
+    """Fuzzy-match a supplier name to the closest tab name."""
+    meta = svc.spreadsheets().get(spreadsheetId=SUPPLIER_SHEET_ID).execute()
+    tab_names = [s["properties"]["title"] for s in meta["sheets"]]
+    q = query.lower().strip()
+    # Exact match first, then prefix, then substring
+    for tab in tab_names:
+        if tab.lower() == q:
+            return tab
+    for tab in tab_names:
+        if tab.lower().startswith(q) or q.startswith(tab.lower()):
+            return tab
+    for tab in tab_names:
+        if q in tab.lower() or tab.lower() in q:
+            return tab
+    return None
+
+
+def _parse_eur(val: str) -> float:
+    try:
+        return float(str(val).replace("€", "").replace(",", "").replace(" ", "").strip())
+    except ValueError:
+        return 0.0
+
+
+def fetch_supplier_outstanding(supplier_name: str) -> dict:
+    svc = _supplier_sheets_svc()
+    tab = _find_supplier_tab(svc, supplier_name)
+    if not tab:
+        return {"error": f"No supplier tab found matching '{supplier_name}'"}
+
+    rows = svc.spreadsheets().values().get(
+        spreadsheetId=SUPPLIER_SHEET_ID,
+        range=f"'{tab}'!A1:O60",
+    ).execute().get("values", [])
+
+    # Row 2 (idx 1): summary totals at col G (idx 6) and col J (idx 9)
+    summary_row = rows[1] if len(rows) > 1 else []
+    total_due     = _parse_eur(summary_row[6])  if len(summary_row) > 6  else 0.0
+    total_balance = _parse_eur(summary_row[9])  if len(summary_row) > 9  else 0.0
+
+    # Find header row (contains "Invoice Date") then parse data rows below it
+    header_idx = next((i for i, r in enumerate(rows) if any("Invoice Date" in str(c) for c in r)), 7)
+
+    invoices = []
+    for row in rows[header_idx + 1:]:
+        if len(row) < 15:
+            continue
+        balance = _parse_eur(row[14])
+        if balance == 0.0:
+            continue
+        invoices.append({
+            "date":    row[1] if len(row) > 1 else "",
+            "invoice": row[2] if len(row) > 2 else "",
+            "amount":  _parse_eur(row[4]) if len(row) > 4 else 0.0,
+            "due":     row[5] if len(row) > 5 else "",
+            "balance": balance,
+        })
+
+    logger.info("Supplier '%s': balance=€%.2f  due=€%.2f  invoices=%d", tab, total_balance, total_due, len(invoices))
+    return {
+        "supplier":      tab,
+        "total_balance": total_balance,
+        "total_due":     total_due,
+        "invoices":      invoices,
+    }
+
+
+def fmt_supplier_outstanding(data: dict) -> str:
+    if "error" in data:
+        return data["error"]
+
+    lines = [
+        f"{data['supplier']} — Outstanding",
+        f"",
+        f"Total balance:  €{data['total_balance']:,.2f}",
+        f"Overdue:        €{data['total_due']:,.2f}",
+        f"",
+    ]
+
+    outstanding = [inv for inv in data["invoices"] if inv["balance"] > 0]
+    credits     = [inv for inv in data["invoices"] if inv["balance"] < 0]
+
+    if outstanding:
+        lines.append("Unpaid invoices:")
+        for inv in outstanding:
+            lines.append(
+                f"  {inv['invoice']:<14}  {inv['date']}  "
+                f"Due {inv['due']}  Balance: €{inv['balance']:,.2f}"
+            )
+
+    if credits:
+        lines.append("")
+        lines.append("Unapplied credit notes:")
+        for inv in credits:
+            lines.append(
+                f"  {inv['invoice']:<14}  {inv['date']}  €{inv['balance']:,.2f}"
+            )
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Gmail
 # ---------------------------------------------------------------------------
 
@@ -326,6 +515,7 @@ SYSTEM_PROMPT = """\
 You parse messages for SVF Products GmbH, trading as Spice Village (South Asian grocery, Berlin, Germany).
 It has two sales channels: Shopify (online orders) and Flour Cloud (retail/in-store POS).
 It has 4 Gmail inboxes: invoices@spicevillage.eu, svfproducts@spicevillage.eu, info@spicevillage.eu, sparikh@spicevillage.eu.
+It tracks supplier invoices and outstanding payments in a Google Sheet (suppliers include: Transfood, Smart Elite, Shalamar, Swagat, AR Food, IPS, Om Food, Das Vegarma, GFT, Bonesca, Asia Express, Deilght Food, Crown, Kumar Ayurveda, Sona Food, Umer, Aayush, Taya, Aheco, Bakery, Desi Megamart).
 
 Company details (use when asked):
 - Legal name: SVF Products GmbH
@@ -343,11 +533,11 @@ Return ONLY valid JSON — no explanation, no markdown fences.
 
 Schema:
 {
-  "intent": "sales_by_period" | "sales_by_product" | "gmail_search" | "company_info" | "unknown",
+  "intent": "sales_by_period" | "sales_by_product" | "gmail_search" | "company_info" | "supplier_outstanding" | "unknown",
   "period": "today" | "yesterday" | "last_7_days" | "this_week" | "last_week" | "this_month" | "last_month" | null,
   "channel": "online" | "retail" | "total" | "compare" | null,
   "product": "<product name>" | null,
-  "search_query": "<gmail search terms>" | null
+  "search_query": "<gmail search terms or supplier name>" | null
 }
 
 Channel rules:
@@ -367,6 +557,11 @@ Gmail rules:
 - intent = gmail_search when: "find invoice", "find email", "search email", "any email", "invoice from", "email about", "did we get an email"
 - search_query = the supplier name, topic, or keyword to search for (clean Gmail search string)
 - period/channel/product = null for gmail_search
+
+Supplier outstanding rules:
+- intent = supplier_outstanding when asked about: outstanding balance, what we owe, unpaid invoices, payment due, how much do we owe [supplier]
+- search_query = the supplier name exactly as mentioned (e.g. "Transfood", "Smart Elite")
+- period/channel/product = null for supplier_outstanding
 
 Company info rules:
 - intent = company_info when asked for: address, IBAN, VAT, tax number, EORI, bank details, phone, managing directors, Handelsregister, PayPal, website, company name, legal details
@@ -489,30 +684,47 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning("DAILY_REPORT_CHAT_ID not set — skipping daily report")
         return
 
-    try:
-        retail_yday = flour_cloud_sales("yesterday")
-        retail_mtd  = flour_cloud_sales("this_month")
-        online_yday = shopify_sales("yesterday")
-        online_mtd  = shopify_sales("this_month")
+    now_berlin  = datetime.now(BERLIN_TZ)
+    yday_label  = (now_berlin - timedelta(days=1)).strftime("%d %b %Y")
+    month_label = now_berlin.strftime("%B %Y")
 
-        now_berlin    = datetime.now(BERLIN_TZ)
-        yday_label    = (now_berlin - timedelta(days=1)).strftime("%d %b %Y")
-        month_label   = now_berlin.strftime("%B %Y")
+    async def _safe_fetch(fn, *args, retries=3, delay=300):
+        for attempt in range(1, retries + 1):
+            try:
+                return fn(*args)
+            except Exception as exc:
+                logger.warning("Daily report fetch attempt %d/%d failed (%s %s): %s", attempt, retries, fn.__name__, args, exc)
+                if attempt < retries:
+                    logger.info("Retrying in %ds...", delay)
+                    await asyncio.sleep(delay)
+        logger.error("Daily report fetch gave up after %d attempts (%s %s)", retries, fn.__name__, args)
+        return None
 
-        msg = (
-            f"Good morning! Daily Sales Briefing\n"
-            f"\n"
-            f"Yesterday ({yday_label})\n"
-            f"  Retail   €{retail_yday['revenue']:>10,.2f}\n"
-            f"  Online   €{online_yday['revenue']:>10,.2f}\n"
-            f"\n"
-            f"Month to Date ({month_label})\n"
-            f"  Retail   €{retail_mtd['revenue']:>10,.2f}\n"
-            f"  Online   €{online_mtd['revenue']:>10,.2f}"
-        )
-    except Exception as exc:
-        logger.error("Daily report fetch error: %s", exc)
-        msg = f"Daily report failed to load: {exc}"
+    retail_yday    = await _safe_fetch(flour_cloud_sales, "yesterday")
+    retail_mtd     = await _safe_fetch(flour_cloud_sales, "this_month")
+    online_yday    = await _safe_fetch(shopify_sales, "yesterday")
+    online_mtd     = await _safe_fetch(shopify_sales, "this_month")
+    restaurant = await _safe_fetch(restaurant_sales_all)
+
+    def _fmt(data, key="revenue"):
+        return f"€{data[key]:>10,.2f}" if data is not None else "      unavailable"
+
+    def _fmt_r(key):
+        return f"€{restaurant[key]:>10,.2f}" if restaurant is not None else "      unavailable"
+
+    msg = (
+        f"Good morning! Daily Sales Briefing\n"
+        f"\n"
+        f"Yesterday ({yday_label})\n"
+        f"  Retail      {_fmt(retail_yday)}\n"
+        f"  Online      {_fmt(online_yday)}\n"
+        f"  Restaurant  {_fmt_r('yesterday')}\n"
+        f"\n"
+        f"Month to Date ({month_label})\n"
+        f"  Retail      {_fmt(retail_mtd)}\n"
+        f"  Online      {_fmt(online_mtd)}\n"
+        f"  Restaurant  {_fmt_r('mtd')}"
+    )
 
     await context.bot.send_message(chat_id=DAILY_REPORT_CHAT_ID, text=msg)
 
@@ -574,6 +786,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "IBAN: DE38100101237197421588\n"
                 "BIC: QNTODEB2XXX"
             )
+
+        elif intent == "supplier_outstanding":
+            if not search_query:
+                reply = "Which supplier? e.g. \"What do we owe Transfood?\""
+            else:
+                data = fetch_supplier_outstanding(search_query)
+                reply = fmt_supplier_outstanding(data)
 
         elif intent == "gmail_search":
             if not search_query:

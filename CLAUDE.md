@@ -45,6 +45,11 @@ Runs 24/7 on Railway. Interface is Telegram only.
 - API Version: 2024-10
 - Location ID: 65313800346
 
+## Business Context — Sales Channels
+- **Online**: Shopify (spice-village-eu.myshopify.com)
+- **Retail**: Flour Cloud POS (flour.host) — Berlin timezone dates
+- **Restaurant**: separate venue, tracked in Google Sheets (monthly cash flow workbook)
+
 ## What's already built (Google Apps Scripts in Sheets)
 - Monthly Shopify order sync
 - Same day delivery tracking
@@ -94,6 +99,34 @@ Runs 24/7 on Railway. Interface is Telegram only.
 - Domain-wide delegation on spicevillage.eu Google Workspace
 - Returns top 3 results per inbox with subject, sender, date, direct Gmail link
 
+### Restaurant sales (Google Sheets)
+- Spreadsheet ID: `1BiiLjs30NF_O6xZz_O-G4bfgcbQnGP6GuRW12vgJJKo` (stored as `RESTAURANT_SHEET_ID`)
+- One tab per month, named "Month YYYY" e.g. "February 2026"
+- Row 3: date headers in DD/MM/YYYY format, starting column I (idx 8), one column per day
+- "Restaurant sales" row found by searching col D for label (row number varies per month — ~267-276)
+- Col E (idx 4) = MTD Actual total; daily value = column matching date in row 3
+- Auth: same service account as Gmail (spreadsheets.readonly scope)
+- Key functions: `_fetch_restaurant_tab(tab_name, find_date_str)` → `restaurant_sales_all()` → `{"yesterday": float, "mtd": float}`
+- Handles month-boundary edge case (yesterday in different tab from current month)
+
+### Daily 4am Briefing
+- Scheduled at 04:00 CET/CEST (Europe/Berlin) via `job_queue.run_daily`
+- Sends to chat ID configured via `DAILY_REPORT_CHAT_ID` env var
+- Reports yesterday's revenue + MTD revenue for: Retail (Flour Cloud), Online (Shopify), Restaurant (Sheets)
+- Each source fetched independently — unavailable shown if one source fails
+- Retry logic: 3 attempts with 5-minute `asyncio.sleep` between retries (non-blocking)
+- Enabled via `python-telegram-bot[job-queue]==20.7` (APScheduler dependency)
+
+### Supplier outstanding (Google Sheets)
+- Spreadsheet ID: `1JMfhCB-af8DNnbYNe2Any2oakbNRJHOFvdFZXDMq1qg` (stored as `SUPPLIER_SHEET_ID`)
+- One tab per supplier (Transfood, Smart Elite, Shalamar, Swagat, AR Food, IPS, Om Food, Das Vegarma, GFT, Bonesca, Asia Express, Deilght Food, Crown, Kumar Ayurveda, Sona Food, Umer, Aayush, Taya, Aheco, Bakery, Desi Megamart)
+- Row 2: col G (idx 6) = TOTAL PAYMENT DUE (overdue), col J (idx 9) = TOTAL PAYMENT BALANCE (all outstanding)
+- Row 8: column headers — Invoice Date (B), Invoice No (C), Total Invoice Amount (E), Due by Date (F), Payment 1-4 + dates, Payment Balance (O, idx 14)
+- Rows 9+: one row per invoice/credit note; RE... = invoices (positive), GS... = credit notes (negative)
+- Outstanding = any row where Payment Balance ≠ 0
+- Tab matched by fuzzy search: exact → prefix → substring
+- Key functions: `_find_supplier_tab(svc, query)`, `fetch_supplier_outstanding(supplier_name)`, `fmt_supplier_outstanding(data)`
+- Intent: `supplier_outstanding` — triggered by "what do we owe X", "outstanding for X", "unpaid invoices X"
+
 ## Current priorities
-1. Morning briefing (revenue + low stock + calendar)
-2. Picker workflow (order replacements + refunds via Telegram)
+1. Picker workflow (order replacements + refunds via Telegram)
