@@ -184,25 +184,45 @@ def _berlin_date_range(period: str):
 
 def fetch_flour_cloud_docs(start_date, end_date) -> list:
     headers = {"Authorization": f"Bearer {FLOUR_CLOUD_TOKEN}"}
-    params = {"limit": 1000, "type": "R", "sort": "-date"}
-    response = requests.get(
-        "https://flour.host/v3/documents",
-        headers=headers,
-        params=params,
-        timeout=30,
-    )
-    response.raise_for_status()
+    all_docs = []
+    skip = 0
+    PAGE = 1000
 
-    data = response.json()
-    if isinstance(data, list):
-        docs = data
-    else:
-        docs = data.get("docs") or data.get("documents") or data.get("data") or []
+    while True:
+        params = {"limit": PAGE, "type": "R", "sort": "-date", "skip": skip}
+        response = requests.get(
+            "https://flour.host/v3/documents",
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
+        response.raise_for_status()
 
-    logger.info("Flour Cloud: fetched %d raw docs, filtering %s → %s (Berlin)", len(docs), start_date, end_date)
+        data = response.json()
+        page = data if isinstance(data, list) else (data.get("docs") or data.get("documents") or data.get("data") or [])
+
+        if not page:
+            break
+
+        all_docs.extend(page)
+
+        # Stop early if the oldest doc on this page is before our start date
+        oldest_date_str = str(page[-1].get("date", ""))[:10]
+        try:
+            if datetime.fromisoformat(oldest_date_str).date() < start_date:
+                break
+        except ValueError:
+            pass
+
+        if len(page) < PAGE:
+            break
+
+        skip += PAGE
+
+    logger.info("Flour Cloud: fetched %d raw docs (paginated), filtering %s → %s (Berlin)", len(all_docs), start_date, end_date)
 
     filtered = []
-    for doc in docs:
+    for doc in all_docs:
         raw_date = str(doc.get("date", ""))[:10]
         try:
             if start_date <= datetime.fromisoformat(raw_date).date() <= end_date:
