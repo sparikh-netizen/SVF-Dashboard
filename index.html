@@ -19,12 +19,29 @@
   </style>
 </head>
 <body class="bg-gray-50 p-6">
+
+  <!-- Login Screen -->
+  <div id="login-screen" class="fixed inset-0 bg-gray-100 flex items-center justify-center z-50">
+    <div class="card w-full max-w-sm text-center">
+      <p class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Spice Village</p>
+      <h2 class="text-xl font-bold text-gray-800 mb-6">Performance Dashboard</h2>
+      <input id="password-input" type="password" placeholder="Enter password"
+        class="w-full border border-gray-300 rounded-lg px-4 py-2 mb-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400"
+        autofocus />
+      <p id="login-error" class="text-red-500 text-sm mb-3 hidden">Incorrect password</p>
+      <button id="login-btn"
+        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-lg transition">
+        Unlock
+      </button>
+    </div>
+  </div>
+
   <div class="max-w-7xl mx-auto">
     <div class="flex justify-between items-center mb-8">
       <h1 class="text-2xl font-bold text-gray-800">Spice Village Performance Dashboard</h1>
-      <span class="text-sm text-gray-500">From Jan 2025 Onwards</span>
+      <span class="text-sm text-gray-500" id="date-range-label">From Jan 2025 Onwards</span>
     </div>
-    
+
     <!-- Loading State -->
     <div id="loading" class="text-center py-12">
       <div class="loading mx-auto mb-4"></div>
@@ -57,7 +74,7 @@
           <p id="rest-target" class="text-xs text-gray-500 mt-2"></p>
         </div>
         <div class="card tile border-purple-500">
-          <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Net Profit (YTD)</p>
+          <p class="text-xs font-bold text-gray-400 uppercase tracking-wider" id="profit-label">Net Profit (YTD)</p>
           <p id="profit-ytd" class="text-2xl font-bold text-gray-800">€0</p>
         </div>
       </div>
@@ -119,6 +136,11 @@
     // ============================================
     // CONFIG & TARGETS
     // ============================================
+    const NOW = new Date();
+    const CURRENT_YEAR = NOW.getFullYear();
+    const CURRENT_MONTH = NOW.getMonth(); // 0-indexed
+    const CHART_START = new Date('2025-01-01');
+
     const TARGETS = {
       online: 90000,
       retail: 45000,
@@ -256,18 +278,18 @@
           sameDay: { labels: [], percentages: [], currentMonth: { percentage: 0, sameDay: 0, total: 0 } }
         };
 
-        // MTD VALUES
-        const shopifyRow = findCurrentMonthRow(shopifyData, 0, 2026);
+        // MTD VALUES — use dynamic current month/year
+        const shopifyRow = findCurrentMonthRow(shopifyData, CURRENT_MONTH, CURRENT_YEAR);
         if (shopifyRow >= 0 && shopifyData[shopifyRow][5]) {
           results.mtd.online = parseCurrency(shopifyData[shopifyRow][5]);
         }
 
-        const retailRow = findCurrentMonthRow(retailData, 0, 2026);
+        const retailRow = findCurrentMonthRow(retailData, CURRENT_MONTH, CURRENT_YEAR);
         if (retailRow >= 0 && retailData[retailRow][2]) {
           results.mtd.retail = parseCurrency(retailData[retailRow][2]);
         }
 
-        const restaurantRow = findCurrentMonthRow(restaurantData, 0, 2026);
+        const restaurantRow = findCurrentMonthRow(restaurantData, CURRENT_MONTH, CURRENT_YEAR);
         if (restaurantRow >= 0) {
           const physical = parseCurrency(restaurantData[restaurantRow][2]);
           const wolt = parseCurrency(restaurantData[restaurantRow + 1]?.[2]);
@@ -275,28 +297,32 @@
           results.mtd.restaurant = physical + wolt + uber;
         }
 
+        // Net Profit YTD — sum current calendar year rows from Pro. Monthly
+        // Note: add CURRENT_YEAR rows to Pro. Monthly sheet for this tile to populate
         sheetProData.slice(1).forEach(row => {
           const date = new Date(row[col.month]);
-          if (!isNaN(date.getTime()) && date.getFullYear() === 2025 && row[col.profit]) {
+          if (!isNaN(date.getTime()) && date.getFullYear() === CURRENT_YEAR && row[col.profit]) {
             results.mtd.profitYTD += parseCurrency(row[col.profit]);
           }
         });
 
-        // PURCHASE MAP
+        // PURCHASE MAP — keyed by "YYYY-M" to avoid year collisions
         let purchaseMap = {};
         sheetPurData.slice(4).forEach(row => {
           if (row[0]) {
             let d = new Date(row[0]);
-            purchaseMap[d.getMonth()] = parseCurrency(row[1]);
+            if (!isNaN(d.getTime())) {
+              purchaseMap[`${d.getFullYear()}-${d.getMonth()}`] = parseCurrency(row[1]);
+            }
           }
         });
 
-        // HISTORICAL CHART DATA
+        // HISTORICAL CHART DATA — all months from Jan 2025 onwards
         const proData = sheetProData.slice(1);
         proData.forEach(row => {
           let d = new Date(row[col.month]);
-          if (d && d.getFullYear() === 2025 && row[col.online] !== "") {
-            let monthLabel = d.toLocaleString('default', { month: 'short' });
+          if (d && d >= CHART_START && row[col.online] !== "") {
+            let monthLabel = d.toLocaleString('default', { month: 'short', year: '2-digit' });
             results.charts.labels.push(monthLabel);
 
             let sOnline = parseCurrency(row[col.online]);
@@ -320,7 +346,7 @@
             results.charts.salaryPct.push(sTotal > 0 ? ((salary / sTotal) * 100).toFixed(1) : 0);
             results.charts.shippingPct.push(sOnline > 0 ? ((shipping / sOnline) * 100).toFixed(1) : 0);
 
-            let pAmt = purchaseMap[d.getMonth()] || 0;
+            let pAmt = purchaseMap[`${d.getFullYear()}-${d.getMonth()}`] || 0;
             results.charts.purchasePct.push(sTotal > 0 ? ((pAmt / sTotal) * 100).toFixed(1) : 0);
           }
         });
@@ -331,12 +357,12 @@
           
           const monthKey = row[0];
           const date = new Date(monthKey + '-01');
-          const monthLabel = date.toLocaleString('default', { month: 'short' });
-          
+          const monthLabel = date.toLocaleString('default', { month: 'short', year: '2-digit' });
+
           results.sameDay.labels.push(monthLabel);
           results.sameDay.percentages.push(parseFloat(row[3]) || 0);
           
-          if (date.getMonth() === 0 && date.getFullYear() === 2026) {
+          if (date.getMonth() === CURRENT_MONTH && date.getFullYear() === CURRENT_YEAR) {
             results.sameDay.currentMonth = {
               percentage: parseFloat(row[3]) || 0,
               sameDay: parseInt(row[2]) || 0,
@@ -365,11 +391,18 @@
         return;
       }
 
+      // Update dynamic labels
+      const currentMonthName = NOW.toLocaleString('default', { month: 'long', year: 'numeric' });
+      document.getElementById('date-range-label').innerText = `Jan 2025 – ${currentMonthName}`;
+      document.getElementById('profit-label').innerText = `Net Profit (${CURRENT_YEAR} YTD)`;
+
       // Update MTD tiles
       document.getElementById('online-mtd').innerText = '€' + Number(data.mtd.online).toLocaleString();
       document.getElementById('retail-mtd').innerText = '€' + Number(data.mtd.retail).toLocaleString();
       document.getElementById('rest-mtd').innerText = '€' + Number(data.mtd.restaurant).toLocaleString();
-      document.getElementById('profit-ytd').innerText = '€' + Number(data.mtd.profitYTD).toLocaleString();
+      document.getElementById('profit-ytd').innerText = data.mtd.profitYTD > 0
+        ? '€' + Number(data.mtd.profitYTD).toLocaleString()
+        : 'Add ' + CURRENT_YEAR + ' rows to Pro. Monthly';
 
       const onlineProgress = calculateProgress(data.mtd.online, TARGETS.online);
       const retailProgress = calculateProgress(data.mtd.retail, TARGETS.retail);
@@ -499,7 +532,42 @@
       document.getElementById('dashboard-content').classList.remove('hidden');
     }
 
-    draw();
+    // ============================================
+    // PASSWORD GATE
+    // ============================================
+
+    async function sha256(str) {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function unlockDashboard() {
+      document.getElementById('login-screen').style.display = 'none';
+      draw();
+    }
+
+    async function handleLogin() {
+      const input = document.getElementById('password-input').value;
+      const hash = await sha256(input);
+      if (hash === CONFIG.passwordHash) {
+        sessionStorage.setItem('svf_auth', hash);
+        unlockDashboard();
+      } else {
+        document.getElementById('login-error').classList.remove('hidden');
+        document.getElementById('password-input').value = '';
+        document.getElementById('password-input').focus();
+      }
+    }
+
+    document.getElementById('login-btn').addEventListener('click', handleLogin);
+    document.getElementById('password-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') handleLogin();
+    });
+
+    // Skip login if already authenticated this session
+    if (sessionStorage.getItem('svf_auth') === CONFIG.passwordHash) {
+      unlockDashboard();
+    }
   </script>
 </body>
 </html>
