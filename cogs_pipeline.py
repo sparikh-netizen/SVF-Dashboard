@@ -132,11 +132,14 @@ def query_daily_product_rows(date_str: str) -> list:
             title,
             SUM(gross_qty - refund_qty)                        AS net_qty,
             SUM(gross_revenue - refund_revenue)                AS net_revenue,
-            SUM(gross_qty * COALESCE(cost_at_sale, 0))         AS cogs_eur,
-            SUM(gross_qty * COALESCE(cost_at_sale, 0))
-                / NULLIF(SUM(gross_revenue - refund_revenue), 0) * 100  AS cogs_pct,
-            SUM(gross_revenue - refund_revenue
-                - gross_qty * COALESCE(cost_at_sale, 0))       AS gross_profit
+            CASE WHEN MAX(cost_at_sale) IS NOT NULL
+                 THEN SUM(gross_qty * cost_at_sale) END        AS cogs_eur,
+            CASE WHEN MAX(cost_at_sale) IS NOT NULL
+                 THEN SUM(gross_qty * cost_at_sale)
+                      / NULLIF(SUM(gross_revenue - refund_revenue), 0) * 100 END  AS cogs_pct,
+            CASE WHEN MAX(cost_at_sale) IS NOT NULL
+                 THEN SUM(gross_revenue - refund_revenue
+                          - gross_qty * cost_at_sale) END      AS gross_profit
         FROM order_line_items
         WHERE order_date = ?
           AND (gross_qty - refund_qty) >= 1
@@ -197,15 +200,17 @@ def _fetch_inventory_costs(inv_ids: list) -> dict:
     return costs
 
 
-def _build_variant_map() -> dict:
-    """Scan all products (active + archived + draft), return {variant_id: inventory_item_id}."""
+def _build_variant_map(variant_ids: set = None) -> dict:
+    """
+    Scan active products, return {variant_id: inventory_item_id}.
+    If variant_ids is provided, stop early once all are found.
+    """
     vm = {}
-    for status in ("active", "archived", "draft"):
-        url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}"
-               f"/products.json?limit=250&status={status}&fields=id,variants")
-        for p in _paginate(url, "products"):
-            for v in p["variants"]:
-                vm[v["id"]] = v["inventory_item_id"]
+    url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}"
+           f"/products.json?limit=250&fields=id,variants")
+    for p in _paginate(url, "products"):
+        for v in p["variants"]:
+            vm[v["id"]] = v["inventory_item_id"]
     return vm
 
 
@@ -236,10 +241,16 @@ def run_daily_pipeline(date_str: str = None) -> str:
            f"&fields=id,name,created_at,cancelled_at,line_items,refunds")
     all_orders = [o for o in _paginate(url, "orders") if not o.get("cancelled_at")]
 
-    # ── 2. Build variant map + fetch costs ─────────────────────────────────
-    variant_map = _build_variant_map()
-    all_inv_ids = list(variant_map.values())
-    inv_costs   = _fetch_inventory_costs(all_inv_ids)
+    # ── 2. Build variant map + fetch costs (only for variants in today's orders) ─
+    order_variant_ids = {
+        li.get("variant_id")
+        for o in all_orders
+        for li in o["line_items"]
+        if li.get("variant_id")
+    }
+    variant_map = _build_variant_map(variant_ids=order_variant_ids)
+    inv_ids_needed = [variant_map[vid] for vid in order_variant_ids if vid in variant_map]
+    inv_costs = _fetch_inventory_costs(inv_ids_needed)
 
     # ── 3. Aggregate line items ────────────────────────────────────────────
     # keyed by (order_id, line_item_id)
@@ -338,18 +349,18 @@ def _append_to_sheet(date_str: str):
     sheet_rows = []
     for r in product_rows:
         net_rev = r["net_revenue"] or 0
-        cogs_e  = r["cogs_eur"]   or 0
-        gp      = r["gross_profit"] or 0
-        cogs_p  = cogs_e / net_rev * 100 if net_rev else 0
+        cogs_e  = r["cogs_eur"]
+        gp      = r["gross_profit"]
+        cogs_p  = r["cogs_pct"]
         sheet_rows.append([
             date_str,
             r["sku"]   or "",
             r["title"] or "",
             r["net_qty"],
             round(net_rev, 2),
-            round(cogs_e,  2),
-            round(cogs_p,  2),
-            round(gp,      2),
+            round(cogs_e, 2)  if cogs_e  is not None else "NO COST",
+            round(cogs_p, 2)  if cogs_p  is not None else "NO COST",
+            round(gp,     2)  if gp      is not None else "NO COST",
         ])
 
     svc.spreadsheets().values().append(
