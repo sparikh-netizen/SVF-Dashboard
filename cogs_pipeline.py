@@ -181,7 +181,7 @@ def _fetch_inventory_costs(inv_ids: list) -> dict:
         while True:
             r = requests.get(
                 f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}/inventory_items.json"
-                f"?ids={','.join(str(x) for x in batch)}",
+                f"?ids={','.join(str(x) for x in batch)}&limit=100",
                 headers=SH, timeout=30
             )
             if r.status_code == 429:
@@ -198,13 +198,14 @@ def _fetch_inventory_costs(inv_ids: list) -> dict:
 
 
 def _build_variant_map() -> dict:
-    """Scan all products, return {variant_id: inventory_item_id}."""
-    url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}"
-           f"/products.json?limit=250&status=any&fields=id,variants")
-    vm  = {}
-    for p in _paginate(url, "products"):
-        for v in p["variants"]:
-            vm[v["id"]] = v["inventory_item_id"]
+    """Scan all products (active + archived + draft), return {variant_id: inventory_item_id}."""
+    vm = {}
+    for status in ("active", "archived", "draft"):
+        url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}"
+               f"/products.json?limit=250&status={status}&fields=id,variants")
+        for p in _paginate(url, "products"):
+            for v in p["variants"]:
+                vm[v["id"]] = v["inventory_item_id"]
     return vm
 
 

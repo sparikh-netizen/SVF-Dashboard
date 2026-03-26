@@ -46,8 +46,8 @@ def fetch_inventory_costs(inv_ids):
     for batch in batches:
         while True:
             r = requests.get(
-                f'https://{STORE}/admin/api/2024-01/inventory_items.json'
-                f'?ids={",".join(str(x) for x in batch)}',
+                f'https://{STORE}/admin/api/2024-10/inventory_items.json'
+                f'?ids={",".join(str(x) for x in batch)}&limit=100',
                 headers=H
             )
             if r.status_code == 429:
@@ -69,12 +69,11 @@ def fetch_inventory_costs(inv_ids):
 def build_variant_map():
     print("Building variant → inventory_item map...")
     variant_to_inv = {}
-    url = f'https://{STORE}/admin/api/2024-10/products.json?limit=250&status=any&fields=id,variants'
-    page = 0
-    for p in paginate(url, 'products'):
-        for v in p['variants']:
-            variant_to_inv[v['id']] = v['inventory_item_id']
-        page += 1
+    for status in ('active', 'archived', 'draft'):
+        url = f'https://{STORE}/admin/api/2024-10/products.json?limit=250&status={status}&fields=id,variants'
+        for p in paginate(url, 'products'):
+            for v in p['variants']:
+                variant_to_inv[v['id']] = v['inventory_item_id']
     print(f"  ✓ {len(variant_to_inv):,} variants mapped")
     return variant_to_inv
 
