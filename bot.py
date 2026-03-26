@@ -9,6 +9,7 @@ import anthropic
 import pytz
 import requests
 from dotenv import load_dotenv
+from cogs_pipeline import run_daily_pipeline
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as google_build
 from telegram import Update
@@ -753,6 +754,21 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
 # Telegram handler
 # ---------------------------------------------------------------------------
 
+async def send_cogs_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not DAILY_REPORT_CHAT_ID:
+        logger.warning("DAILY_REPORT_CHAT_ID not set — skipping COGS report")
+        return
+    try:
+        msg = await asyncio.get_event_loop().run_in_executor(None, run_daily_pipeline)
+        await context.bot.send_message(chat_id=DAILY_REPORT_CHAT_ID, text=msg)
+    except Exception as exc:
+        logger.error("COGS report failed: %s", exc)
+        await context.bot.send_message(
+            chat_id=DAILY_REPORT_CHAT_ID,
+            text=f"⚠️ COGS report failed: {exc}"
+        )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
@@ -874,6 +890,11 @@ def main() -> None:
             time=dt_time(4, 0, 0, tzinfo=BERLIN_TZ),
         )
         logger.info("Daily report scheduled at 04:00 CET/CEST → chat %s", DAILY_REPORT_CHAT_ID)
+        app.job_queue.run_daily(
+            send_cogs_report,
+            time=dt_time(3, 0, 0, tzinfo=BERLIN_TZ),
+        )
+        logger.info("COGS report scheduled at 03:00 CET/CEST → chat %s", DAILY_REPORT_CHAT_ID)
     else:
         logger.warning("DAILY_REPORT_CHAT_ID not set — daily report disabled")
 
