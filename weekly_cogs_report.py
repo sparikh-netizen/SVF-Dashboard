@@ -69,7 +69,7 @@ def fetch_inventory_costs(inv_ids):
 def build_variant_map():
     print("Building variant → inventory_item map...")
     variant_to_inv = {}
-    url = f'https://{STORE}/admin/api/2024-01/products.json?limit=250&fields=id,variants'
+    url = f'https://{STORE}/admin/api/2024-10/products.json?limit=250&status=any&fields=id,variants'
     page = 0
     for p in paginate(url, 'products'):
         for v in p['variants']:

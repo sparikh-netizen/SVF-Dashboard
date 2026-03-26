@@ -200,7 +200,7 @@ def _fetch_inventory_costs(inv_ids: list) -> dict:
 def _build_variant_map() -> dict:
     """Scan all products, return {variant_id: inventory_item_id}."""
     url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}"
-           f"/products.json?limit=250&fields=id,variants")
+           f"/products.json?limit=250&status=any&fields=id,variants")
     vm  = {}
     for p in _paginate(url, "products"):
         for v in p["variants"]:
