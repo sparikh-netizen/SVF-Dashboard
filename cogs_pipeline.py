@@ -238,7 +238,7 @@ def run_daily_pipeline(date_str: str = None) -> str:
     url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}/orders.json"
            f"?limit=250&status=any"
            f"&created_at_min={utc_start}&created_at_max={utc_end}"
-           f"&fields=id,name,created_at,cancelled_at,line_items,refunds")
+           f"&fields=id,name,created_at,cancelled_at,line_items,refunds,tax_lines")
     all_orders = [o for o in _paginate(url, "orders") if not o.get("cancelled_at")]
 
     # ── 2. Build variant map + fetch costs (only for variants in today's orders) ─
@@ -263,6 +263,9 @@ def run_daily_pipeline(date_str: str = None) -> str:
             key  = (oid, lid)
             inv_id   = variant_map.get(vid)
             cost     = inv_costs.get(inv_id) if inv_id else None
+            qty     = li.get("quantity", 0)
+            price   = float(li.get("price", 0))
+            li_tax  = sum(float(t.get("price", 0)) for t in li.get("tax_lines", []))
             agg[key] = {
                 "order_id":      oid,
                 "line_item_id":  lid,
@@ -270,10 +273,10 @@ def run_daily_pipeline(date_str: str = None) -> str:
                 "sku":           li.get("sku") or "",
                 "title":         li.get("title", ""),
                 "variant_id":    vid,
-                "gross_qty":     li.get("quantity", 0),
-                "gross_revenue": li.get("quantity", 0) * float(li.get("price", 0)),
+                "gross_qty":     qty,
+                "gross_revenue": qty * price - li_tax,   # ex-VAT
                 "refund_qty":    0,
-                "refund_revenue": 0.0,
+                "refund_revenue": 0.0,                   # refund subtotal is already ex-VAT
                 "cost_at_sale":  cost,
             }
         # Refunds: subtract revenue, keep COGS on original qty
