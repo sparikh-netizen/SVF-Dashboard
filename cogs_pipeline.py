@@ -3,11 +3,16 @@ SVF Daily COGS Pipeline
 - Pulls yesterday's Shopify orders (Berlin local date)
 - Fetches cost via inventory_item_id — locked as cost_at_sale in SQLite
 - Appends one row per product to Google Sheet "COGS Daily" tab
-- Returns a Telegram summary message string
+- Returns a Telegram summary message string (ex-VAT revenue, correct COGS%)
 
-Called by bot.py at 08:00 Berlin time via job_queue.run_daily.
+Called by bot.py at 03:00 Berlin time via job_queue.run_daily.
 SQLite DB path: env var COGS_DB_PATH, default ./cogs.db
 Requires a Railway persistent volume mounted at that path for durability.
+
+Revenue stored ex-VAT (gross_revenue = price × qty − tax_lines).
+gross_tax stored separately so inc-VAT revenue can be derived.
+refund_revenue = subtotal (already ex-VAT in Shopify).
+refund_tax = total_tax on refund line item.
 """
 
 import os
@@ -36,6 +41,13 @@ _SERVICE_ACCOUNT_FILE = os.path.join(
 )
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+SHEET_HEADER = [
+    "Date", "SKU", "Product name", "Units sold",
+    "Net rev ex-VAT €", "Net rev inc-VAT €",
+    "COGS €", "COGS% ex-VAT", "COGS% inc-VAT",
+    "GP ex-VAT €", "GP inc-VAT €",
+]
+
 
 # ── SQLite ─────────────────────────────────────────────────────────────────
 
@@ -52,12 +64,25 @@ def _get_db():
             variant_id     INTEGER,
             gross_qty      INTEGER DEFAULT 0,
             gross_revenue  REAL    DEFAULT 0,
+            gross_tax      REAL    DEFAULT 0,
             refund_qty     INTEGER DEFAULT 0,
             refund_revenue REAL    DEFAULT 0,
+            refund_tax     REAL    DEFAULT 0,
             cost_at_sale   REAL,
+            cost_source    TEXT    DEFAULT 'live',
             PRIMARY KEY (order_id, line_item_id)
         )
     """)
+    # Migrate older DBs that lack the new columns
+    for col, definition in [
+        ("gross_tax",    "REAL DEFAULT 0"),
+        ("refund_tax",   "REAL DEFAULT 0"),
+        ("cost_source",  "TEXT DEFAULT 'live'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE order_line_items ADD COLUMN {col} {definition}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
@@ -68,42 +93,58 @@ def upsert_line_items(rows: list):
     conn.executemany("""
         INSERT OR IGNORE INTO order_line_items
             (order_id, line_item_id, order_date, sku, title, variant_id,
-             gross_qty, gross_revenue, refund_qty, refund_revenue, cost_at_sale)
+             gross_qty, gross_revenue, gross_tax,
+             refund_qty, refund_revenue, refund_tax,
+             cost_at_sale, cost_source)
         VALUES
             (:order_id, :line_item_id, :order_date, :sku, :title, :variant_id,
-             :gross_qty, :gross_revenue, :refund_qty, :refund_revenue, :cost_at_sale)
+             :gross_qty, :gross_revenue, :gross_tax,
+             :refund_qty, :refund_revenue, :refund_tax,
+             :cost_at_sale, :cost_source)
     """, rows)
     conn.commit()
     conn.close()
 
 
 def query_summary(date_from: str, date_to: str) -> dict:
-    """Return {revenue, cogs, gross_profit, cogs_pct} for a date range (inclusive)."""
+    """
+    Return revenue/COGS/GP for a date range (inclusive).
+    revenue / cogs_pct / gross_profit are ex-VAT (correct for P&L).
+    _inc_vat variants are included for reference.
+    """
     conn = _get_db()
     row = conn.execute("""
         SELECT
-            SUM(gross_revenue - refund_revenue)                      AS revenue,
-            SUM(gross_qty * COALESCE(cost_at_sale, 0))               AS cogs,
+            SUM(gross_revenue - refund_revenue)                           AS rev_ex_vat,
+            SUM(gross_revenue + gross_tax - refund_revenue - refund_tax)  AS rev_inc_vat,
+            SUM(gross_qty * cost_at_sale)                                 AS cogs,
             SUM(gross_revenue - refund_revenue
-                - gross_qty * COALESCE(cost_at_sale, 0))             AS gross_profit
+                - gross_qty * cost_at_sale)                               AS gp_ex_vat,
+            SUM(gross_revenue + gross_tax - refund_revenue - refund_tax
+                - gross_qty * cost_at_sale)                               AS gp_inc_vat
         FROM order_line_items
         WHERE order_date >= ? AND order_date <= ?
           AND cost_at_sale IS NOT NULL
     """, (date_from, date_to)).fetchone()
     conn.close()
-    rev  = row["revenue"]  or 0
-    cogs = row["cogs"]     or 0
-    gp   = row["gross_profit"] or 0
+    rev_ex  = row["rev_ex_vat"]  or 0
+    rev_inc = row["rev_inc_vat"] or 0
+    cogs    = row["cogs"]        or 0
+    gp_ex   = row["gp_ex_vat"]  or 0
+    gp_inc  = row["gp_inc_vat"] or 0
     return {
-        "revenue":      rev,
-        "cogs":         cogs,
-        "gross_profit": gp,
-        "cogs_pct":     cogs / rev * 100 if rev else 0,
+        "revenue":          rev_ex,
+        "revenue_inc_vat":  rev_inc,
+        "cogs":             cogs,
+        "gross_profit":     gp_ex,
+        "gross_profit_inc_vat": gp_inc,
+        "cogs_pct":         cogs / rev_ex  * 100 if rev_ex  else 0,
+        "cogs_pct_inc_vat": cogs / rev_inc * 100 if rev_inc else 0,
     }
 
 
 def query_problem_products(date_str: str, min_rev: float = 50, max_cogs_pct: float = 60) -> list:
-    """Return products on date_str with net revenue > min_rev and COGS% > max_cogs_pct."""
+    """Products on date_str with ex-VAT net revenue > min_rev and ex-VAT COGS% > max_cogs_pct."""
     conn = _get_db()
     rows = conn.execute("""
         SELECT
@@ -124,27 +165,37 @@ def query_problem_products(date_str: str, min_rev: float = 50, max_cogs_pct: flo
 
 
 def query_daily_product_rows(date_str: str) -> list:
-    """Return per-product rows for a given date — for Google Sheet append."""
+    """Per-product rows for a given date — for Google Sheet append."""
     conn = _get_db()
     rows = conn.execute("""
         SELECT
             sku,
             title,
-            SUM(gross_qty - refund_qty)                        AS net_qty,
-            SUM(gross_revenue - refund_revenue)                AS net_revenue,
+            SUM(gross_qty - refund_qty)                                        AS net_qty,
+            SUM(gross_revenue - refund_revenue)                                AS rev_ex_vat,
+            SUM(gross_revenue + gross_tax - refund_revenue - refund_tax)       AS rev_inc_vat,
             CASE WHEN MAX(cost_at_sale) IS NOT NULL
-                 THEN SUM(gross_qty * cost_at_sale) END        AS cogs_eur,
+                 THEN SUM(gross_qty * cost_at_sale) END                        AS cogs_eur,
             CASE WHEN MAX(cost_at_sale) IS NOT NULL
                  THEN SUM(gross_qty * cost_at_sale)
-                      / NULLIF(SUM(gross_revenue - refund_revenue), 0) * 100 END  AS cogs_pct,
+                      / NULLIF(SUM(gross_revenue - refund_revenue), 0) * 100
+                 END                                                            AS cogs_pct_ex,
+            CASE WHEN MAX(cost_at_sale) IS NOT NULL
+                 THEN SUM(gross_qty * cost_at_sale)
+                      / NULLIF(SUM(gross_revenue + gross_tax
+                                   - refund_revenue - refund_tax), 0) * 100
+                 END                                                            AS cogs_pct_inc,
             CASE WHEN MAX(cost_at_sale) IS NOT NULL
                  THEN SUM(gross_revenue - refund_revenue
-                          - gross_qty * cost_at_sale) END      AS gross_profit
+                          - gross_qty * cost_at_sale) END                      AS gp_ex_vat,
+            CASE WHEN MAX(cost_at_sale) IS NOT NULL
+                 THEN SUM(gross_revenue + gross_tax - refund_revenue - refund_tax
+                          - gross_qty * cost_at_sale) END                      AS gp_inc_vat
         FROM order_line_items
         WHERE order_date = ?
           AND (gross_qty - refund_qty) >= 1
         GROUP BY sku, title
-        ORDER BY net_revenue DESC
+        ORDER BY rev_ex_vat DESC
     """, (date_str,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -176,7 +227,7 @@ def _paginate(url: str, key: str) -> list:
 
 
 def _fetch_inventory_costs(inv_ids: list) -> dict:
-    """Fetch cost per inventory_item_id. 1s delay between batches. 429 retry."""
+    """Fetch cost per inventory_item_id. Batches of 100. 1s delay. 429 retry."""
     costs  = {}
     unique = list(set(inv_ids))
     for i in range(0, len(unique), 100):
@@ -201,10 +252,7 @@ def _fetch_inventory_costs(inv_ids: list) -> dict:
 
 
 def _build_variant_map(variant_ids: set = None) -> dict:
-    """
-    Scan active products, return {variant_id: inventory_item_id}.
-    If variant_ids is provided, stop early once all are found.
-    """
+    """Scan active products, return {variant_id: inventory_item_id}."""
     vm = {}
     url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}"
            f"/products.json?limit=250&fields=id,variants")
@@ -220,25 +268,22 @@ def run_daily_pipeline(date_str: str = None) -> str:
     """
     Run the full COGS pipeline for `date_str` (YYYY-MM-DD Berlin local).
     Defaults to yesterday Berlin time.
-    Returns the Telegram message string.
+    Returns the Telegram message string (ex-VAT figures).
     """
     now_berlin = datetime.now(BERLIN_TZ)
     if date_str is None:
         date_str = (now_berlin - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Berlin midnight boundaries in UTC for Shopify query
-    berlin_start = BERLIN_TZ.localize(
-        datetime.strptime(date_str, "%Y-%m-%d")
-    )
-    berlin_end = berlin_start + timedelta(days=1) - timedelta(seconds=1)
-    utc_start  = berlin_start.astimezone(pytz.utc).isoformat()
-    utc_end    = berlin_end.astimezone(pytz.utc).isoformat()
+    berlin_start = BERLIN_TZ.localize(datetime.strptime(date_str, "%Y-%m-%d"))
+    berlin_end   = berlin_start + timedelta(days=1) - timedelta(seconds=1)
+    utc_start    = berlin_start.astimezone(pytz.utc).isoformat()
+    utc_end      = berlin_end.astimezone(pytz.utc).isoformat()
 
     # ── 1. Pull orders ─────────────────────────────────────────────────────
     url = (f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}/orders.json"
            f"?limit=250&status=any"
            f"&created_at_min={utc_start}&created_at_max={utc_end}"
-           f"&fields=id,name,created_at,cancelled_at,line_items,refunds,tax_lines")
+           f"&fields=id,name,created_at,cancelled_at,line_items,refunds")
     all_orders = [o for o in _paginate(url, "orders") if not o.get("cancelled_at")]
 
     # ── 2. Build variant map + fetch costs (only for variants in today's orders) ─
@@ -248,24 +293,22 @@ def run_daily_pipeline(date_str: str = None) -> str:
         for li in o["line_items"]
         if li.get("variant_id")
     }
-    variant_map = _build_variant_map(variant_ids=order_variant_ids)
+    variant_map   = _build_variant_map(variant_ids=order_variant_ids)
     inv_ids_needed = [variant_map[vid] for vid in order_variant_ids if vid in variant_map]
-    inv_costs = _fetch_inventory_costs(inv_ids_needed)
+    inv_costs     = _fetch_inventory_costs(inv_ids_needed)
 
     # ── 3. Aggregate line items ────────────────────────────────────────────
-    # keyed by (order_id, line_item_id)
     agg = {}
     for order in all_orders:
         oid = str(order["id"])
         for li in order["line_items"]:
-            lid  = str(li["id"])
-            vid  = li.get("variant_id") or 0
-            key  = (oid, lid)
-            inv_id   = variant_map.get(vid)
-            cost     = inv_costs.get(inv_id) if inv_id else None
-            qty     = li.get("quantity", 0)
-            price   = float(li.get("price", 0))
-            li_tax  = sum(float(t.get("price", 0)) for t in li.get("tax_lines", []))
+            lid   = str(li["id"])
+            vid   = li.get("variant_id") or 0
+            key   = (oid, lid)
+            qty   = li.get("quantity", 0)
+            price = float(li.get("price", 0))
+            li_tax = sum(float(t.get("price", 0)) for t in li.get("tax_lines", []))
+            inv_id = variant_map.get(vid)
             agg[key] = {
                 "order_id":      oid,
                 "line_item_id":  lid,
@@ -274,10 +317,13 @@ def run_daily_pipeline(date_str: str = None) -> str:
                 "title":         li.get("title", ""),
                 "variant_id":    vid,
                 "gross_qty":     qty,
-                "gross_revenue": qty * price - li_tax,   # ex-VAT
+                "gross_revenue": qty * price - li_tax,  # ex-VAT
+                "gross_tax":     li_tax,
                 "refund_qty":    0,
-                "refund_revenue": 0.0,                   # refund subtotal is already ex-VAT
-                "cost_at_sale":  cost,
+                "refund_revenue": 0.0,  # ex-VAT (Shopify subtotal)
+                "refund_tax":    0.0,
+                "cost_at_sale":  inv_costs.get(inv_id) if inv_id else None,
+                "cost_source":   "live",
             }
         # Refunds: subtract revenue, keep COGS on original qty
         for refund in order.get("refunds", []):
@@ -286,7 +332,8 @@ def run_daily_pipeline(date_str: str = None) -> str:
                 key = (oid, lid)
                 if key in agg:
                     agg[key]["refund_qty"]     += ri.get("quantity", 0)
-                    agg[key]["refund_revenue"] += float(ri.get("subtotal", 0))
+                    agg[key]["refund_revenue"] += float(ri.get("subtotal",   0))
+                    agg[key]["refund_tax"]     += float(ri.get("total_tax",  0))
 
     rows = list(agg.values())
 
@@ -296,7 +343,7 @@ def run_daily_pipeline(date_str: str = None) -> str:
     # ── 5. Append to Google Sheet ──────────────────────────────────────────
     _append_to_sheet(date_str)
 
-    # ── 6. Build Telegram message ──────────────────────────────────────────
+    # ── 6. Build Telegram message (ex-VAT) ─────────────────────────────────
     return _build_telegram_message(date_str, now_berlin)
 
 
@@ -311,31 +358,28 @@ def _get_sheets_service():
 
 def _ensure_tab(svc):
     """Create COGS Daily tab with header if it doesn't exist."""
-    meta = svc.spreadsheets().get(spreadsheetId=COGS_SHEET_ID).execute()
+    meta  = svc.spreadsheets().get(spreadsheetId=COGS_SHEET_ID).execute()
     names = [s["properties"]["title"] for s in meta["sheets"]]
     if COGS_TAB not in names:
         svc.spreadsheets().batchUpdate(
             spreadsheetId=COGS_SHEET_ID,
             body={"requests": [{"addSheet": {"properties": {"title": COGS_TAB}}}]}
         ).execute()
-        # Write header
-        svc.spreadsheets().values().update(
-            spreadsheetId=COGS_SHEET_ID,
-            range=f"{COGS_TAB}!A1",
-            valueInputOption="USER_ENTERED",
-            body={"values": [["Date", "SKU", "Product name", "Units sold",
-                              "Net revenue €", "Net COGS €", "COGS%", "Gross profit €"]]}
-        ).execute()
+    # Always (re)write header row so it stays in sync with SHEET_HEADER
+    svc.spreadsheets().values().update(
+        spreadsheetId=COGS_SHEET_ID,
+        range=f"{COGS_TAB}!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": [SHEET_HEADER]}
+    ).execute()
 
 
 def _date_already_written(svc, date_str: str) -> bool:
-    """Check if rows for this date already exist in the sheet."""
     result = svc.spreadsheets().values().get(
         spreadsheetId=COGS_SHEET_ID,
         range=f"{COGS_TAB}!A:A"
     ).execute()
-    values = result.get("values", [])
-    return any(row and row[0] == date_str for row in values)
+    return any(row and row[0] == date_str for row in result.get("values", []))
 
 
 def _append_to_sheet(date_str: str):
@@ -343,27 +387,29 @@ def _append_to_sheet(date_str: str):
     _ensure_tab(svc)
 
     if _date_already_written(svc, date_str):
-        return  # Idempotent: never write the same date twice
+        return  # Idempotent
 
     product_rows = query_daily_product_rows(date_str)
     if not product_rows:
         return
 
+    def _v(x):
+        return round(x, 2) if x is not None else "NO COST"
+
     sheet_rows = []
     for r in product_rows:
-        net_rev = r["net_revenue"] or 0
-        cogs_e  = r["cogs_eur"]
-        gp      = r["gross_profit"]
-        cogs_p  = r["cogs_pct"]
         sheet_rows.append([
             date_str,
             r["sku"]   or "",
             r["title"] or "",
             r["net_qty"],
-            round(net_rev, 2),
-            round(cogs_e, 2)  if cogs_e  is not None else "NO COST",
-            round(cogs_p, 2)  if cogs_p  is not None else "NO COST",
-            round(gp,     2)  if gp      is not None else "NO COST",
+            _v(r["rev_ex_vat"]),
+            _v(r["rev_inc_vat"]),
+            _v(r["cogs_eur"]),
+            _v(r["cogs_pct_ex"]),
+            _v(r["cogs_pct_inc"]),
+            _v(r["gp_ex_vat"]),
+            _v(r["gp_inc_vat"]),
         ])
 
     svc.spreadsheets().values().append(
@@ -382,34 +428,34 @@ def _build_telegram_message(date_str: str, now_berlin: datetime) -> str:
     mtd_start    = now_berlin.replace(day=1).strftime("%Y-%m-%d")
     week_start   = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=6)).strftime("%Y-%m-%d")
 
-    yday = query_summary(date_str,    date_str)
-    week = query_summary(week_start,  date_str)
-    mtd  = query_summary(mtd_start,   date_str)
+    yday  = query_summary(date_str,   date_str)
+    week  = query_summary(week_start, date_str)
+    mtd   = query_summary(mtd_start,  date_str)
     probs = query_problem_products(date_str, min_rev=50, max_cogs_pct=60)
 
     def _fmt(d: dict) -> str:
-        return (f"Revenue: €{d['revenue']:,.0f} | "
+        return (f"Rev (ex-VAT): €{d['revenue']:,.0f} | "
                 f"COGS: {d['cogs_pct']:.1f}% | "
-                f"Gross Profit: €{d['gross_profit']:,.0f}")
+                f"GP: €{d['gross_profit']:,.0f}")
 
     lines = [
         f"📊 COGS Report — {display_date}",
         "",
         f"📅 Yesterday",
-        f"{_fmt(yday)}",
+        _fmt(yday),
         "",
         f"📆 Last 7 Days (rolling)",
-        f"{_fmt(week)}",
+        _fmt(week),
         "",
         f"🗓 Month to Date",
-        f"{_fmt(mtd)}",
+        _fmt(mtd),
     ]
 
     if probs:
-        lines += ["", "⚠️ Problem Products (revenue >€50, COGS >60%)"]
+        lines += ["", "⚠️ Problem Products (ex-VAT rev >€50, COGS >60%)"]
         for p in probs[:8]:
             lines.append(
-                f"{p['title'][:35]} | €{p['net_revenue']:.0f} rev | {p['cogs_pct']:.1f}% COGS"
+                f"{p['title'][:35]} | €{p['net_revenue']:.0f} | {p['cogs_pct']:.1f}%"
             )
 
     lines += [
