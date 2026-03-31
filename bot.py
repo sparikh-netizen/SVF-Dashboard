@@ -10,6 +10,7 @@ import pytz
 import requests
 from dotenv import load_dotenv
 from cogs_pipeline import run_daily_pipeline
+from competitor_monitor import run_price_monitor
 from google.oauth2 import service_account
 from googleapiclient.discovery import build as google_build
 from telegram import Update
@@ -754,6 +755,14 @@ async def send_daily_report(context: ContextTypes.DEFAULT_TYPE) -> None:
 # Telegram handler
 # ---------------------------------------------------------------------------
 
+async def send_price_monitor(context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, run_price_monitor)
+        logger.info("Price monitor: %s", result)
+    except Exception as exc:
+        logger.error("Price monitor failed: %s", exc)
+
+
 async def send_cogs_report(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not DAILY_REPORT_CHAT_ID:
         logger.warning("DAILY_REPORT_CHAT_ID not set — skipping COGS report")
@@ -895,6 +904,11 @@ def main() -> None:
             time=dt_time(3, 0, 0, tzinfo=BERLIN_TZ),
         )
         logger.info("COGS report scheduled at 03:00 CET/CEST → chat %s", DAILY_REPORT_CHAT_ID)
+        app.job_queue.run_daily(
+            send_price_monitor,
+            time=dt_time(7, 0, 0, tzinfo=BERLIN_TZ),
+        )
+        logger.info("Price monitor scheduled at 07:00 CET/CEST (runs every alternate day)")
     else:
         logger.warning("DAILY_REPORT_CHAT_ID not set — daily report disabled")
 

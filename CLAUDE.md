@@ -167,6 +167,46 @@ Runs 24/7 on Railway. Interface is Telegram only.
 
 ---
 
+## Competitor Price Monitor
+
+### Files
+- `competitor_monitor.py` — main script, called by bot.py
+- `price_monitor_products.csv` — 40 products to monitor (SKU, our_title, search_term, weight, weight_g)
+
+### How it works
+- Runs every **alternate day at 07:00 Berlin time** (odd calendar days: 1, 3, 5 … 31)
+- Fetches our live prices from Shopify variants API
+- Searches **jamoona.com** and **eu.dookan.com** (both are Shopify stores — use `/search/suggest.json` API, no HTML scraping)
+- **Matching strategy**: brand-specific first (search "{brand} {type}" and accept only if competitor's title/vendor contains that brand), then generic fallback (search "{type}" and take best weight match)
+  - Example: "Anjappar Sona Masoori 10kg" → search "Anjappar sona masoori rice" → finds Anjappar on Jamoona ✓
+  - Example: "Annam Sona Masoori 10kg" → Annam not on Jamoona → falls back to "sona masoori rice" → returns Heer (best available)
+- Weight matching: ±20% tolerance (e.g. 900g–1100g matches 1kg)
+- Email sent to: sparikh@spicevillage.eu AND info@spicevillage.eu
+
+### Email format
+HTML table grouped by product category. Color coded:
+- 🔴 We're >5% more expensive than cheapest competitor
+- 🟡 Within 5%
+- 🟢 We're cheapest
+
+### Error handling
+- Retries 3 times (30s, 60s delays) before giving up
+- On total failure: sends error email to sparikh@spicevillage.eu with full traceback + checklist of what to investigate
+
+### Gmail auth
+- Service account: `spice-village-bot@spice-village-bot.iam.gserviceaccount.com`
+- Scope: `https://mail.google.com/` (NOT gmail.send — that scope has a known GCP propagation issue)
+- Domain-wide delegation configured in Google Workspace Admin (admin.google.com → Security → API Controls → DWD)
+- Sends as/from: sparikh@spicevillage.eu
+
+### Manual test run
+```bash
+SHOPIFY_ACCESS_TOKEN=... python3 competitor_monitor.py --force
+```
+`--force` bypasses the alternate-day gate.
+
+---
+
 ## COGS Pipeline
 
 ### Scripts
@@ -185,13 +225,16 @@ Runs 24/7 on Railway. Interface is Telegram only.
 - Path: env var `COGS_DB_PATH`, default `./cogs.db`
 - **Requires Railway persistent volume** — ephemeral filesystem will lose data on redeploy
 - Table: `order_line_items` — primary key `(order_id, line_item_id)`, idempotent on re-run
-- Columns: `order_id`, `line_item_id`, `order_date` (Berlin YYYY-MM-DD), `sku`, `title`, `variant_id`, `gross_qty`, `gross_revenue`, `refund_qty`, `refund_revenue`, `cost_at_sale`
+- Columns: `order_id`, `line_item_id`, `order_date` (Berlin YYYY-MM-DD), `sku`, `title`, `variant_id`, `gross_qty`, `gross_revenue` (ex-VAT), `gross_tax`, `refund_qty`, `refund_revenue` (ex-VAT), `refund_tax`, `cost_at_sale`, `cost_source` ('live' or 'backfill')
+- Revenue stored ex-VAT: `gross_revenue = qty × price − tax_lines`. `gross_tax` stored separately to derive inc-VAT.
+- Schema migration: `_get_db()` runs `ALTER TABLE ADD COLUMN` with try/except for idempotency on existing DBs
+- Backfilled Jan 1 – Mar 24 2026: 49,989 rows, 99.8% cost coverage. Jan COGS 60.3%, Feb 59.2%, Mar 59.3% (ex-VAT)
 - Used for rolling 7-day and MTD summaries without extra Shopify API calls
 
 ### Google Sheet — COGS Shopify
 - **Sheet ID:** `1vmL9PXQMgwxEioHAIydtOvRbPwBaF4gQbUsIbfG2Y_A`
 - **Tab:** `COGS Daily`
-- **Columns:** Date | SKU | Product name | Units sold | Net revenue € | Net COGS € | COGS% | Gross profit €
+- **Columns:** Date | SKU | Product name | Units sold | Net rev ex-VAT € | Net rev inc-VAT € | COGS € | COGS% ex-VAT | COGS% inc-VAT | GP ex-VAT € | GP inc-VAT €
 - Tab auto-created with header if missing. Date-deduplication prevents double-writes.
 - Service account: `spice-village-bot@spice-village-bot.iam.gserviceaccount.com`
 
